@@ -7,10 +7,13 @@ chose this tool yesterday would still choose it.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from mcp_contract.model import (
     ADDITIVE,
     BREAKING,
     COSMETIC,
+    FORMAT,
     ROUTING,
     Argument,
     Change,
@@ -222,9 +225,61 @@ def _compare_tool(old: ToolContract, new: ToolContract) -> list[Change]:
     return out
 
 
+def _is_child(child: str, parent: str) -> bool:
+    """`filters.city` and `tags[].name` are children; `filtersX` is not."""
+    return child.startswith(f"{parent}.") or child.startswith(f"{parent}[].")
+
+
+def _narrow(prior: dict[str, Argument], fields: tuple[Argument, ...]) -> tuple[Argument, ...]:
+    """Present these fields the way a format-1 contract recorded them.
+
+    Nested fields are dropped — that format could not express them, so it never
+    promised anything about them. And where a parent's type is only knowable by
+    resolving a `$ref`, the old contract recorded none; keeping the newly-resolved
+    type would read as a type change. Both are newly-*visible* information, not
+    changes in the promise, and reporting them as breaking would fail the build of
+    every user who did nothing but upgrade.
+    """
+    kept = []
+    for arg in fields:
+        if any(_is_child(arg.name, p) for p in (a.name for a in fields)):
+            continue  # nested: not expressible in format 1
+        recorded = prior.get(arg.name)
+        has_children = any(_is_child(other.name, arg.name) for other in fields)
+        if has_children and recorded is not None and recorded.type is None:
+            arg = replace(arg, type=None)
+        kept.append(arg)
+    return tuple(kept)
+
+
+def _as_recorded(old: Contract, new: Contract) -> tuple[Contract, int]:
+    """Reduce the live contract to what the recorded format could express, and say
+    how many fields that hid. Comparing like with like is the whole point: a tool
+    upgrade must never look like a server change."""
+    hidden = 0
+    tools = []
+    for tool in new.tools:
+        recorded = old.by_name.get(tool.name)
+        arguments = _narrow(recorded.by_name if recorded else {}, tool.arguments)
+        output = _narrow(recorded.output_by_name if recorded else {}, tool.output)
+        hidden += (len(tool.arguments) - len(arguments)) + (len(tool.output) - len(output))
+        tools.append(replace(tool, arguments=arguments, output=output))
+    return replace(new, tools=tools), hidden
+
+
 def compare(old: Contract, new: Contract) -> DiffReport:
     """Diff a recorded contract against a live one."""
     changes: list[Change] = []
+    notes: list[str] = list(new.unrecorded)
+
+    if old.format < FORMAT:
+        new, hidden = _as_recorded(old, new)
+        if hidden:
+            notes.append(
+                f"this contract predates nested-field tracking, so {hidden} nested "
+                "field(s) are not being checked. Re-snapshot to start checking them."
+            )
+
     old_tools, new_tools = old.by_name, new.by_name
 
     for name in sorted(set(old_tools) - set(new_tools)):
@@ -265,4 +320,4 @@ def compare(old: Contract, new: Contract) -> DiffReport:
                    f"{old.server_version} -> {new.server_version}")
         )
 
-    return DiffReport(changes=changes, tools_checked=len(new.tools))
+    return DiffReport(changes=changes, tools_checked=len(new.tools), notes=notes)

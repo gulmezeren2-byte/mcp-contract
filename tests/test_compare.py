@@ -266,6 +266,78 @@ def test_prompt_argument_becoming_required_is_breaking() -> None:
     assert kinds(old, new)["prompt-argument-now-required"] == BREAKING
 
 
+# --------------------------------------------------------------------------- #
+# nested fields, and not punishing people for upgrading
+#
+# 0.4.0 resolves `$ref`, so it sees fields no earlier version could. Compared naively
+# against a contract recorded by 0.3.0, every one of those newly-visible required
+# fields reads as `required-argument-added` — breaking — on a server that never
+# changed. A tool upgrade must never look like a server change.
+# --------------------------------------------------------------------------- #
+def nested_contract() -> Contract:
+    return contract(
+        tool(
+            "search",
+            Argument("filters", "object", required=True),
+            Argument("filters.city", "string", required=True),
+            Argument("filters.year", "integer", required=True),
+            Argument("limit", "integer"),
+        )
+    )
+
+
+def as_format_1(c: Contract) -> Contract:
+    """What 0.3.0 would have recorded for the same server: no nested fields, and no
+    type on the argument whose type was only knowable by resolving a $ref."""
+    old = contract(tool("search", Argument("filters", None, required=True),
+                        Argument("limit", "integer")))
+    old.format = 1
+    return old
+
+
+def test_upgrading_the_tool_is_not_a_breaking_change() -> None:
+    report = compare(as_format_1(nested_contract()), nested_contract())
+    assert report.ok
+    assert report.breaking == 0
+    assert report.changes == []
+    # but it does not go quiet about the gap
+    assert report.notes
+    assert "re-snapshot" in " ".join(report.notes).lower()
+
+
+def test_an_old_contract_still_catches_a_real_top_level_break() -> None:
+    # narrowing the comparison must not narrow what it protects
+    live = contract(tool("search", Argument("filters", "object", required=True),
+                         Argument("filters.city", "string", required=True)))
+    report = compare(as_format_1(nested_contract()), live)
+    assert kinds(as_format_1(nested_contract()), live)["argument-removed"] == BREAKING
+    assert not report.ok
+
+
+def test_a_current_contract_diffs_nested_fields_normally() -> None:
+    old = nested_contract()
+    new = contract(
+        tool(
+            "search",
+            Argument("filters", "object", required=True),
+            Argument("filters.city", "string", required=True),
+            Argument("limit", "integer"),
+        )
+    )
+    # renaming or dropping a field inside a nested model breaks a caller exactly as a
+    # top-level one does — which is the entire point of resolving $ref
+    assert kinds(old, new)["argument-removed"] == BREAKING
+
+
+def test_probe_notes_reach_the_report() -> None:
+    live = nested_contract()
+    live.unrecorded = ["search: root: #/$defs/Node refers to itself"]
+    report = compare(nested_contract(), live)
+    assert report.ok  # a note is not a change
+    assert report.notes == live.unrecorded
+    assert report.to_dict()["notes"] == live.unrecorded
+
+
 def test_report_counts_and_json_shape() -> None:
     old = contract(tool("gone"), tool("t", description="one"))
     report = compare(old, contract(tool("t", description="two")))

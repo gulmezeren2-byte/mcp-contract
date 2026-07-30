@@ -56,6 +56,29 @@ def test_reads_the_0_2_prompt_format(tmp_path: Path) -> None:
     assert restored.prompts[0].arguments == ()
 
 
+def test_the_format_is_recorded_so_an_old_file_is_recognisable(tmp_path: Path) -> None:
+    # compare() needs to know how expressive the recorded file was, or upgrading the
+    # tool reports breaking changes on a server that never changed
+    path = tmp_path / "c.json"
+    write(CONTRACT, path)
+    assert '"format": 2' in path.read_text(encoding="utf-8")
+    assert read(path).format == 2
+
+
+def test_a_file_without_a_format_key_is_format_1(tmp_path: Path) -> None:
+    path = tmp_path / "old.json"
+    path.write_text('{"server": {"name": "s"}, "tools": []}', encoding="utf-8")
+    assert read(path).format == 1
+
+
+def test_what_could_not_be_recorded_is_not_written_to_the_file() -> None:
+    # it is a fact about one probe, not part of the promise; storing it would make the
+    # committed file churn between runs
+    noted = Contract(tools=[ToolContract("t", "d")], unrecorded=["t: x: cycle"])
+    assert "unrecorded" not in dumps(noted)
+    assert "cycle" not in dumps(noted)
+
+
 def test_serialisation_is_stable_regardless_of_input_order() -> None:
     # tools, resources and prompts all fed in a different order — output is identical
     shuffled = Contract(

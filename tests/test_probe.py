@@ -3,7 +3,12 @@ into a contract, and tolerating the SDK's field renames."""
 
 from __future__ import annotations
 
-from mcp_contract.probe import _argument_type, _first_attr, surface_from_schema
+from mcp_contract.probe import (
+    MAX_NESTING,
+    _argument_type,
+    _first_attr,
+    surface_from_schema,
+)
 
 SCHEMA = {
     "type": "object",
@@ -71,6 +76,162 @@ def test_union_types_are_readable_and_stable() -> None:
     assert _argument_type({"anyOf": [{"type": "string"}, {"type": "null"}]}) == "null|string"
     assert _argument_type({"type": "integer"}) == "integer"
     assert _argument_type({}) is None
+
+
+# --------------------------------------------------------------------------- #
+# $ref — the shape Pydantic actually emits, and the spec now requires resolving
+#
+# A tool taking a nested model advertises `{"$ref": "#/$defs/Filters"}` and puts the
+# real fields under `$defs`. Reading only top-level `properties` records the argument
+# with no type and no inner fields, so renaming an inner field is a breaking change
+# reported as "no change" — a silent miss, the worst defect a contract tool can have.
+# MCP spec 2026-07-28 (SEP-2106) makes $ref resolution a client requirement.
+# --------------------------------------------------------------------------- #
+PYDANTIC_NESTED = {
+    "$defs": {
+        "Filters": {
+            "properties": {
+                "city": {"title": "City", "type": "string"},
+                "year": {"title": "Year", "type": "integer"},
+            },
+            "required": ["city", "year"],
+            "title": "Filters",
+            "type": "object",
+        }
+    },
+    "properties": {
+        "filters": {"$ref": "#/$defs/Filters"},
+        "limit": {"default": 10, "title": "Limit", "type": "integer"},
+    },
+    "required": ["filters"],
+    "title": "searchArguments",
+    "type": "object",
+}
+
+
+def test_nested_model_fields_are_recorded() -> None:
+    tool = surface_from_schema("search", "Search.", PYDANTIC_NESTED)
+    args = tool.by_name
+    # the parent is still there, and now says what it is
+    assert args["filters"].required is True
+    assert args["filters"].type == "object"
+    # ...and the fields a caller actually has to get right are no longer invisible
+    assert args["filters.city"].type == "string"
+    assert args["filters.year"].type == "integer"
+    assert args["limit"].type == "integer"
+
+
+def test_nested_required_is_relative_to_its_parent() -> None:
+    # `filters` itself is optional here, but a caller who supplies it must still
+    # supply `city` — so an inner optional -> required is a real break, and is
+    # recorded independently of the parent.
+    schema = {
+        "$defs": PYDANTIC_NESTED["$defs"],
+        "properties": {"filters": {"$ref": "#/$defs/Filters"}},
+        "required": [],
+    }
+    args = surface_from_schema("t", "", schema).by_name
+    assert args["filters"].required is False
+    assert args["filters.city"].required is True
+
+
+def test_the_older_definitions_keyword_also_resolves() -> None:
+    schema = {
+        "definitions": {"P": {"type": "object", "properties": {"a": {"type": "string"}}}},
+        "properties": {"p": {"$ref": "#/definitions/P"}},
+    }
+    assert surface_from_schema("t", "", schema).by_name["p.a"].type == "string"
+
+
+def test_a_list_of_models_is_recorded_with_bracket_notation() -> None:
+    schema = {
+        "$defs": {"Tag": {"type": "object", "properties": {"name": {"type": "string"}}}},
+        "properties": {"tags": {"type": "array", "items": {"$ref": "#/$defs/Tag"}}},
+    }
+    args = surface_from_schema("t", "", schema).by_name
+    assert args["tags"].type == "array"
+    assert args["tags[].name"].type == "string"
+
+
+def test_an_optional_nested_model_inside_anyof_resolves() -> None:
+    # `filters: Filters | None = None` is spelled as anyOf[$ref, null]
+    schema = {
+        "$defs": PYDANTIC_NESTED["$defs"],
+        "properties": {
+            "filters": {"anyOf": [{"$ref": "#/$defs/Filters"}, {"type": "null"}]}
+        },
+    }
+    args = surface_from_schema("t", "", schema).by_name
+    assert args["filters.city"].type == "string"
+
+
+def test_nested_output_fields_are_recorded_too() -> None:
+    out = {
+        "$defs": {"Row": {"type": "object", "properties": {"id": {"type": "string"}}}},
+        "properties": {"row": {"$ref": "#/$defs/Row"}},
+        "required": ["row"],
+    }
+    tool = surface_from_schema("t", "", {"type": "object"}, out)
+    assert tool.output_by_name["row.id"].type == "string"
+
+
+def test_nested_names_stay_sorted_and_stable() -> None:
+    tool = surface_from_schema("search", "", PYDANTIC_NESTED)
+    names = [a.name for a in tool.arguments]
+    assert names == sorted(names)
+    # a parent sorts before its own children, so the file reads top-down
+    assert names.index("filters") < names.index("filters.city")
+
+
+# --------------------------------------------------------------------------- #
+# bounded, and never silently truncated
+# --------------------------------------------------------------------------- #
+SELF_REFERENTIAL = {
+    "$defs": {
+        "Node": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "child": {"$ref": "#/$defs/Node"},
+            },
+        }
+    },
+    "properties": {"root": {"$ref": "#/$defs/Node"}},
+}
+
+
+def test_a_self_referential_model_terminates_and_says_so() -> None:
+    notes: list[str] = []
+    tool = surface_from_schema("t", "", SELF_REFERENTIAL, notes=notes)
+    args = tool.by_name
+    assert args["root.label"].type == "string"  # got at least one level
+    # it stopped, and it did not stop quietly — a silent truncation in a
+    # correctness tool is exactly the bug this portfolio exists to catch
+    assert notes
+    assert any("root" in n for n in notes)
+
+
+def test_an_unresolvable_ref_is_left_alone_and_surfaced() -> None:
+    # an external or unknown $ref is not something to guess about
+    schema = {"properties": {"x": {"$ref": "https://example.com/other.json#/Thing"}}}
+    notes: list[str] = []
+    args = surface_from_schema("t", "", schema, notes=notes).by_name
+    assert args["x"].type is None
+    assert notes
+
+
+def test_deep_nesting_stops_at_the_documented_limit() -> None:
+    # five levels of object nesting; the cap is what keeps output bounded
+    defs = {
+        f"L{i}": {"type": "object", "properties": {"next": {"$ref": f"#/$defs/L{i + 1}"}}}
+        for i in range(8)
+    }
+    defs["L8"] = {"type": "object", "properties": {"leaf": {"type": "string"}}}
+    schema = {"$defs": defs, "properties": {"a": {"$ref": "#/$defs/L0"}}}
+    notes: list[str] = []
+    names = [a.name for a in surface_from_schema("t", "", schema, notes=notes).arguments]
+    assert max(n.count(".") for n in names) <= MAX_NESTING
+    assert notes  # the cut is reported, not hidden
 
 
 def test_first_attr_speaks_both_sdk_spellings() -> None:

@@ -94,6 +94,9 @@ def snapshot(
     written = _snapshot.write(contract, path)  # type: ignore[arg-type]
     if show:
         _report.render_contract(contract, _console)  # type: ignore[arg-type]
+    else:
+        # `--quiet` means "don't list the surface", not "hide what you couldn't record"
+        _report.render_notes(contract.unrecorded, _console)  # type: ignore[attr-defined]
     _console.print(f"wrote [bold]{written}[/bold] — commit it so a change shows up in review")
 
 
@@ -139,6 +142,8 @@ def show(
     contract = _probe_or_exit(server, timeout)
     if json_out:
         payload = contract.to_dict()  # type: ignore[attr-defined]
+        if contract.unrecorded:  # type: ignore[attr-defined]
+            payload["unrecorded"] = list(contract.unrecorded)  # type: ignore[attr-defined]
         typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         _report.render_contract(contract, _console)  # type: ignore[arg-type]

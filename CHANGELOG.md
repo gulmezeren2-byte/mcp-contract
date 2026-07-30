@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.0 — 2026-07-30
+
+Fixes a silent miss: part of the surface this tool claimed to hold servers to was
+never actually being recorded.
+
+- **`$ref` is now resolved, so nested arguments are part of the contract.** A tool
+  taking a Pydantic model advertises `{"$ref": "#/$defs/Filters"}` with the real
+  fields under `$defs`. Earlier versions read only top-level `properties`, recorded
+  the argument with no type and no inner fields, and therefore reported *"No change"*
+  when a field inside the model was renamed, retyped, or made required — breaking
+  changes, reported as safe. Nested fields are now recorded with dotted names
+  (`filters.city`), lists of models with brackets (`tags[].name`), and `allOf` /
+  `anyOf` / `oneOf` and the older `definitions` keyword are followed too. Nested
+  required-ness is relative to the parent. MCP spec revision 2026-07-28 (SEP-2106)
+  makes `$ref` resolution a client requirement; it was a correctness bug either way.
+- **Bounded, and never a silent truncation.** Nesting stops at four levels, a
+  self-referential model stops where it loops, an external `$ref` is not fetched, and
+  an `anyOf` with more than one object branch is not guessed at. Every one of those
+  is printed under *not recorded* — in a tool whose whole thesis is honest
+  measurement, quietly recording less than it claims would be the worst defect it
+  could have. `--json` carries them as `notes`; they never affect the exit code.
+- **Upgrading is not a breaking change.** Contract files now carry a `format` number.
+  A file recorded by ≤ 0.3.0 never asserted anything about nested fields, so `check`
+  holds itself to what that file actually claimed and says to re-snapshot, instead of
+  reporting the newly-visible required fields as `required-argument-added`. Without
+  this, upgrading the tool would have failed the build of every user whose server
+  takes a nested model, on a server that never changed.
+
+
 ## 0.3.0 — 2026-07-30
 
 - **Prompt arguments are now part of the contract.** 0.2.0 tracked prompts by

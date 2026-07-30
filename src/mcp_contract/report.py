@@ -59,6 +59,18 @@ def render_contract(contract: Contract, console: Console | None = None) -> None:
     if contract.prompts:
         summary += f", {len(contract.prompts)} prompt(s)"
     console.print(f"{summary} [dim]— required arguments in bold[/dim]")
+    render_notes(contract.unrecorded, console)
+
+
+def render_notes(notes: list[str], console: Console, label: str = "not recorded") -> None:
+    """Say what could not be captured. A correctness tool that quietly records less
+    than it claims is worse than one that admits the gap, so this is never silent."""
+    if not notes:
+        return
+    console.print()
+    console.print(Text(f"{label} ({len(notes)})", style="yellow"))
+    for note in notes:
+        console.print(f"  [dim]{note}[/dim]")
 
 
 def render(report: DiffReport, console: Console | None = None) -> None:
@@ -75,6 +87,7 @@ def render(report: DiffReport, console: Console | None = None) -> None:
         console.print(
             f"[green]No change[/green] — {report.tools_checked} tool(s) match the contract."
         )
+        render_notes(report.notes, console, "worth knowing")
         return
 
     arrow = glyphs()["arrow"]
@@ -96,6 +109,7 @@ def render(report: DiffReport, console: Console | None = None) -> None:
         console.print(f"  [cyan]{change.kind}[/cyan]  [bold]{where}[/bold]")
         console.print(f"      [dim]{change.detail}[/dim]")
 
+    render_notes(report.notes, console, "worth knowing")
     console.print()
     _summary(report, console)
 

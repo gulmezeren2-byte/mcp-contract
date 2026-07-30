@@ -30,6 +30,15 @@ COSMETIC = "cosmetic"
 # Worst first, for sorting and for deciding an exit code.
 SEVERITY_ORDER = {BREAKING: 0, ROUTING: 1, ADDITIVE: 2, COSMETIC: 3}
 
+# How expressive the recorded file is. Bumped only when a new version can see
+# something an older one could not, because that is exactly when a naive comparison
+# would report a change on a server that never changed:
+#   1 — top-level schema fields only (mcp-contract <= 0.3.0)
+#   2 — nested fields behind `$ref` and composition keywords, dotted (`filters.city`)
+# `compare()` reads the recorded format and holds itself to what that format could
+# actually assert. See `_as_recorded` there.
+FORMAT = 2
+
 
 @dataclass(frozen=True)
 class Argument:
@@ -146,6 +155,12 @@ class Contract:
     server_name: str = ""
     server_version: str = ""
     command: str = ""
+    format: int = FORMAT
+    # What the schema described but the contract could not record — an unresolvable
+    # `$ref`, a self-referential model, nesting past the limit. Deliberately *not*
+    # serialised: it is a fact about this probe, not part of the promise, and writing
+    # it would make the committed file less stable. Surfaced by the CLI instead.
+    unrecorded: list[str] = field(default_factory=list)
 
     @property
     def by_name(self) -> dict[str, ToolContract]:
@@ -153,6 +168,7 @@ class Contract:
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
+            "format": self.format,
             "server": {"name": self.server_name, "version": self.server_version},
             "command": self.command,
             "tools": [t.to_dict() for t in sorted(self.tools, key=lambda t: t.name)],
@@ -173,6 +189,8 @@ class Contract:
             server_name=str(server.get("name") or ""),
             server_version=str(server.get("version") or ""),
             command=str(data.get("command") or ""),
+            # a file with no `format` key predates the concept: format 1
+            format=int(data.get("format") or 1),
         )
 
 
@@ -202,6 +220,10 @@ class DiffReport:
 
     changes: list[Change] = field(default_factory=list)
     tools_checked: int = 0
+    # Things the reader should know that are not changes in the promise: a field the
+    # schema described but the contract could not record, or a recorded contract too
+    # old to express part of what was compared. Never affects the exit code.
+    notes: list[str] = field(default_factory=list)
 
     def count(self, severity: str) -> int:
         return sum(1 for c in self.changes if c.severity == severity)
@@ -245,4 +267,5 @@ class DiffReport:
                 "cosmetic": self.cosmetic,
             },
             "changes": [c.to_dict() for c in self.sorted_changes()],
+            "notes": list(self.notes),
         }

@@ -64,12 +64,37 @@ Note the mirror: for an **input** argument, widening the accepted type is safe a
 
 An agent doesn't read your JSON Schema to decide *whether* to call a tool — it reads the description. Reword it and no call breaks, no schema differs, every contract test in the ordinary sense passes... and the agent may quietly stop choosing that tool, or start choosing it for the wrong task. That's a real behavioural change a schema diff cannot see, so it gets named rather than buried. It doesn't fail the build by default; `--strict` is how you say it should.
 
+## Nested arguments
+
+A tool that takes a model rather than a handful of scalars advertises a `$ref`:
+
+```json
+{ "properties": { "filters": { "$ref": "#/$defs/Filters" } },
+  "$defs": { "Filters": { "properties": { "city": {"type": "string"} }, "required": ["city"] } } }
+```
+
+That's what any Pydantic model compiles to, so it's the normal shape, not an exotic one. The fields a caller actually has to get right live behind the reference — so they're followed, and recorded with dotted names:
+
+```
+filters          object    required
+filters.city     string    required
+filters.year     integer   required
+limit            integer
+```
+
+Rename `city` and you get `argument-removed filters.city` — breaking, exactly as a top-level rename is. Lists of models get bracket notation (`tags[].name`). Nested required-ness is *relative to its parent*: `filters.city` being required means a caller who supplies `filters` must include `city`, whatever `filters`' own required-ness is.
+
+Resolution is bounded and never quiet about it. Nesting stops at four levels, a model that refers to itself stops where it loops, an external `$ref` is not fetched, and an `anyOf` with two object branches isn't guessed at — each of those prints under **not recorded** rather than being dropped in silence.
+
+Contract files carry a `format` number. One recorded before nested fields were tracked (mcp-contract ≤ 0.3.0) never promised anything about them, so `check` holds itself to what that file actually claimed and tells you to re-snapshot — upgrading this tool never reports a breaking change on a server that didn't change.
+
 ## Honest about the edges
 
-- It compares tools (input arguments **and** output fields), prompts (presence **and** their arguments), and the presence of resources.
+- It compares tools (input arguments — nested ones included — **and** output fields), prompts (presence **and** their arguments), and the presence of resources.
 - Output schemas are only as detailed as the server advertises. A server that returns an untyped object (`additionalProperties: true`, common with dict-returning FastMCP tools) has no output fields to diff — that's correct, not a miss.
 - It reads what the server *advertises*. Whether a tool still behaves correctly is a different question, and this doesn't answer it.
-- Type comparison is structural: `string` → `string|null` is widening (safe), the reverse is narrowing (breaking). Each argument is compared at the top level of its schema.
+- Type comparison is structural: `string` → `string|null` is widening (safe), the reverse is narrowing (breaking).
+- Per-call metadata is deliberately excluded. The `ttlMs` and `cacheScope` fields the 2026-07-28 spec requires on list responses are cache hints that can differ between two probes of an unchanged server; recording them would make every `check` a diff about nothing.
 - Re-snapshotting is how you accept a change deliberately. Nothing is rewritten behind your back.
 - It speaks both MCP Python SDK spellings (`inputSchema` and `input_schema`), because the SDK renamed them and servers in the wild use both — which is, more or less, the argument for this project.
 
