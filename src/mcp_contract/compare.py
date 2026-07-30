@@ -16,6 +16,7 @@ from mcp_contract.model import (
     Change,
     Contract,
     DiffReport,
+    PromptContract,
     ToolContract,
 )
 
@@ -134,6 +135,41 @@ def _compare_output_field(tool: str, old: Argument, new: Argument) -> list[Chang
     return out
 
 
+def _compare_prompt(old: PromptContract, new: PromptContract) -> list[Change]:
+    """Prompt arguments are caller-supplied, so they break like tool inputs: remove
+    one, or make one required, and a caller's existing invocation stops working."""
+    out: list[Change] = []
+    oa, na = old.by_name, new.by_name
+    for name in sorted(set(oa) - set(na)):
+        out.append(
+            Change("prompt-argument-removed", BREAKING, old.name,
+                   "a caller passing it now sends an unknown argument", name)
+        )
+    for name in sorted(set(na) - set(oa)):
+        if na[name].required:
+            out.append(
+                Change("prompt-required-argument-added", BREAKING, old.name,
+                       "new prompt argument is required; existing calls break", name)
+            )
+        else:
+            out.append(
+                Change("prompt-argument-added", ADDITIVE, old.name,
+                       "new optional prompt argument", name)
+            )
+    for name in sorted(set(oa) & set(na)):
+        if not oa[name].required and na[name].required:
+            out.append(
+                Change("prompt-argument-now-required", BREAKING, old.name,
+                       "was optional, now required; calls that omitted it break", name)
+            )
+        elif oa[name].required and not na[name].required:
+            out.append(
+                Change("prompt-argument-now-optional", ADDITIVE, old.name,
+                       "was required, now optional", name)
+            )
+    return out
+
+
 def _compare_tool(old: ToolContract, new: ToolContract) -> list[Change]:
     out: list[Change] = []
 
@@ -203,18 +239,25 @@ def compare(old: Contract, new: Contract) -> DiffReport:
     for name in sorted(set(old_tools) & set(new_tools)):
         changes.extend(_compare_tool(old_tools[name], new_tools[name]))
 
-    # resources and prompts: dropping one breaks a caller as surely as dropping a tool
-    for kind, old_names, new_names in (
-        ("resource", set(old.resources), set(new.resources)),
-        ("prompt", set(old.prompts), set(new.prompts)),
-    ):
-        for name in sorted(old_names - new_names):
-            changes.append(
-                Change(f"{kind}-removed", BREAKING, name,
-                       f"a {kind} the server exposed is gone")
-            )
-        for name in sorted(new_names - old_names):
-            changes.append(Change(f"{kind}-added", ADDITIVE, name, f"new {kind}"))
+    # resources: presence only (a dropped resource breaks a caller as a dropped tool does)
+    for name in sorted(set(old.resources) - set(new.resources)):
+        changes.append(
+            Change("resource-removed", BREAKING, name, "a resource the server exposed is gone")
+        )
+    for name in sorted(set(new.resources) - set(old.resources)):
+        changes.append(Change("resource-added", ADDITIVE, name, "new resource"))
+
+    # prompts: presence plus their arguments
+    old_p = {p.name: p for p in old.prompts}
+    new_p = {p.name: p for p in new.prompts}
+    for name in sorted(set(old_p) - set(new_p)):
+        changes.append(
+            Change("prompt-removed", BREAKING, name, "a prompt the server exposed is gone")
+        )
+    for name in sorted(set(new_p) - set(old_p)):
+        changes.append(Change("prompt-added", ADDITIVE, name, "new prompt"))
+    for name in sorted(set(old_p) & set(new_p)):
+        changes.extend(_compare_prompt(old_p[name], new_p[name]))
 
     if old.server_version and new.server_version and old.server_version != new.server_version:
         changes.append(

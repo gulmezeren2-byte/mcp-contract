@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-07-30
+
+- **Prompt arguments are now part of the contract.** 0.2.0 tracked prompts by
+  presence only; now their arguments are diffed the way tool inputs are, since a
+  caller supplies them: removing a prompt argument, or making an optional one
+  required, breaks an existing invocation, while a new optional argument is additive.
+- The contract file's `prompts` field grows from a list of names to a list of
+  `{name, arguments}`. Contracts written by 0.2.0 (bare names) still read — an
+  absent `arguments` list simply means no arguments were recorded.
+
+
 ## 0.2.0 — 2026-07-30
 
 Extends the contract from the input surface to the whole surface a caller depends on.

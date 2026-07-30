@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_contract.model import Argument, Contract, ToolContract
+from mcp_contract.model import Argument, Contract, PromptContract, ToolContract
 from mcp_contract.snapshot import SnapshotError, dumps, read, write
 
 CONTRACT = Contract(
@@ -20,7 +20,10 @@ CONTRACT = Contract(
         ),
     ],
     resources=["file:///b", "file:///a"],
-    prompts=["translate", "summarize"],
+    prompts=[
+        PromptContract("translate", (Argument("text", required=True), Argument("lang"))),
+        PromptContract("summarize"),
+    ],
     server_name="srv",
     server_version="1.2.3",
     command="srv --stdio",
@@ -32,10 +35,25 @@ def test_round_trip_preserves_the_contract() -> None:
     assert restored.server_name == "srv"
     assert restored.by_name["a_tool"].by_name["x"].required is True
     assert restored.by_name["b_tool"].by_name["a"].type == "integer"
-    # output fields, resources and prompts survive too
+    # output fields, resources and prompts (with their arguments) survive too
     assert restored.by_name["a_tool"].output_by_name["id"].required is True
     assert sorted(restored.resources) == ["file:///a", "file:///b"]
-    assert sorted(restored.prompts) == ["summarize", "translate"]
+    prompts = {p.name: p for p in restored.prompts}
+    assert sorted(prompts) == ["summarize", "translate"]
+    assert prompts["translate"].by_name["text"].required is True
+
+
+def test_reads_the_0_2_prompt_format(tmp_path: Path) -> None:
+    # 0.2 wrote prompts as a bare list of names; an existing committed contract must
+    # still read.
+    path = tmp_path / "old.json"
+    path.write_text(
+        '{"server": {"name": "s", "version": "1"}, "tools": [], "prompts": ["a", "b"]}',
+        encoding="utf-8",
+    )
+    restored = read(path)
+    assert sorted(p.name for p in restored.prompts) == ["a", "b"]
+    assert restored.prompts[0].arguments == ()
 
 
 def test_serialisation_is_stable_regardless_of_input_order() -> None:

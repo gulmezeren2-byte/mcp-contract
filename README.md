@@ -66,7 +66,7 @@ An agent doesn't read your JSON Schema to decide *whether* to call a tool — it
 
 ## Honest about the edges
 
-- It compares tools (input arguments **and** output fields), plus the presence of resources and prompts. Prompt *arguments* aren't diffed field-by-field yet — only whether the prompt still exists.
+- It compares tools (input arguments **and** output fields), prompts (presence **and** their arguments), and the presence of resources.
 - Output schemas are only as detailed as the server advertises. A server that returns an untyped object (`additionalProperties: true`, common with dict-returning FastMCP tools) has no output fields to diff — that's correct, not a miss.
 - It reads what the server *advertises*. Whether a tool still behaves correctly is a different question, and this doesn't answer it.
 - Type comparison is structural: `string` → `string|null` is widening (safe), the reverse is narrowing (breaking). Each argument is compared at the top level of its schema.

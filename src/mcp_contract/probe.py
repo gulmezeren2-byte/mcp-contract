@@ -19,7 +19,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from mcp_contract.model import Argument, Contract, ToolContract
+from mcp_contract.model import Argument, Contract, PromptContract, ToolContract
 
 DEFAULT_TIMEOUT = 60.0
 
@@ -116,14 +116,35 @@ async def _list_names(coro: Any, attr: str, key: str) -> list[str]:
     return out
 
 
+async def _list_prompts(session: ClientSession) -> list[PromptContract]:
+    """Prompts with their arguments. Like tools, a prompt losing an argument (or
+    gaining a required one) breaks a caller, so the arguments are part of the contract."""
+    try:
+        result = await session.list_prompts()
+    except Exception:  # noqa: BLE001 - unsupported capability is not a failure
+        return []
+    out = []
+    for prompt in getattr(result, "prompts", None) or []:
+        args = tuple(
+            Argument(
+                name=str(a.name),
+                required=bool(getattr(a, "required", False)),
+                description=str(getattr(a, "description", "") or ""),
+            )
+            for a in (getattr(prompt, "arguments", None) or [])
+        )
+        out.append(PromptContract(name=str(prompt.name), arguments=args))
+    return out
+
+
 async def _probe(command: str, args: list[str], env: dict[str, str] | None) -> Contract:
     params = StdioServerParameters(command=command, args=args, env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         init = await session.initialize()
         listed = await session.list_tools()
-        # resources are keyed by URI, prompts by name — both break a caller if dropped
+        # resources break a caller if dropped; prompts also break if an argument goes
         resources = await _list_names(session.list_resources, "resources", "uri")
-        prompts = await _list_names(session.list_prompts, "prompts", "name")
+        prompts = await _list_prompts(session)
 
     info = _first_attr(init, "serverInfo", "server_info")
     tools = [

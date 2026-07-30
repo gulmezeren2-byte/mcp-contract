@@ -11,6 +11,7 @@ from mcp_contract.model import (
     ROUTING,
     Argument,
     Contract,
+    PromptContract,
     ToolContract,
 )
 
@@ -26,16 +27,22 @@ def tool(
     )
 
 
+def prompt(name: str, *args: Argument) -> PromptContract:
+    return PromptContract(name=name, arguments=tuple(args))
+
+
 def contract(
     *tools: ToolContract,
     version: str = "1.0.0",
     resources: list[str] | None = None,
-    prompts: list[str] | None = None,
+    prompts: list[PromptContract | str] | None = None,
 ) -> Contract:
+    # a bare string is shorthand for a prompt with no arguments
+    prompt_objs = [PromptContract(name=p) if isinstance(p, str) else p for p in (prompts or [])]
     return Contract(
         tools=list(tools),
         resources=resources or [],
-        prompts=prompts or [],
+        prompts=prompt_objs,
         server_name="srv",
         server_version=version,
     )
@@ -232,6 +239,31 @@ def test_removed_prompt_is_breaking() -> None:
     old = contract(tool("t"), prompts=["summarize", "translate"])
     new = contract(tool("t"), prompts=["summarize"])
     assert kinds(old, new)["prompt-removed"] == BREAKING
+
+
+def test_removed_prompt_argument_is_breaking() -> None:
+    old = contract(tool("t"), prompts=[prompt("p", Argument("topic"), Argument("lang"))])
+    new = contract(tool("t"), prompts=[prompt("p", Argument("topic"))])
+    assert kinds(old, new)["prompt-argument-removed"] == BREAKING
+
+
+def test_new_required_prompt_argument_is_breaking() -> None:
+    old = contract(tool("t"), prompts=[prompt("p", Argument("topic"))])
+    added = prompt("p", Argument("topic"), Argument("lang", required=True))
+    new = contract(tool("t"), prompts=[added])
+    assert kinds(old, new)["prompt-required-argument-added"] == BREAKING
+
+
+def test_new_optional_prompt_argument_is_additive() -> None:
+    old = contract(tool("t"), prompts=[prompt("p", Argument("topic"))])
+    new = contract(tool("t"), prompts=[prompt("p", Argument("topic"), Argument("lang"))])
+    assert kinds(old, new)["prompt-argument-added"] == ADDITIVE
+
+
+def test_prompt_argument_becoming_required_is_breaking() -> None:
+    old = contract(tool("t"), prompts=[prompt("p", Argument("lang", required=False))])
+    new = contract(tool("t"), prompts=[prompt("p", Argument("lang", required=True))])
+    assert kinds(old, new)["prompt-argument-now-required"] == BREAKING
 
 
 def test_report_counts_and_json_shape() -> None:

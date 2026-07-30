@@ -104,15 +104,45 @@ class ToolContract:
         )
 
 
+@dataclass(frozen=True)
+class PromptContract:
+    """A prompt as a caller sees it: its name and the arguments it takes. Prompt
+    arguments are caller-supplied, so they compare like tool *inputs* (removing one,
+    or making one required, breaks a caller)."""
+
+    name: str
+    arguments: tuple[Argument, ...] = ()
+
+    @property
+    def by_name(self) -> dict[str, Argument]:
+        return {a.name: a for a in self.arguments}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "arguments": [a.to_dict() for a in sorted(self.arguments, key=lambda a: a.name)],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> PromptContract:
+        # Back-compat: 0.2 wrote prompts as a bare list of names.
+        if isinstance(data, str):
+            return cls(name=data)
+        return cls(
+            name=str(data["name"]),
+            arguments=tuple(Argument.from_dict(a) for a in data.get("arguments", [])),
+        )
+
+
 @dataclass
 class Contract:
     """A whole server surface, plus how it was obtained. Tools are the bulk of it,
     but a server also promises resources and prompts — dropping one breaks a caller
-    just as surely — so their names are carried too."""
+    just as surely — so they are carried too."""
 
     tools: list[ToolContract] = field(default_factory=list)
     resources: list[str] = field(default_factory=list)
-    prompts: list[str] = field(default_factory=list)
+    prompts: list[PromptContract] = field(default_factory=list)
     server_name: str = ""
     server_version: str = ""
     command: str = ""
@@ -130,7 +160,7 @@ class Contract:
         if self.resources:
             out["resources"] = sorted(self.resources)
         if self.prompts:
-            out["prompts"] = sorted(self.prompts)
+            out["prompts"] = [p.to_dict() for p in sorted(self.prompts, key=lambda p: p.name)]
         return out
 
     @classmethod
@@ -139,7 +169,7 @@ class Contract:
         return cls(
             tools=[ToolContract.from_dict(t) for t in data.get("tools", [])],
             resources=[str(r) for r in data.get("resources", [])],
-            prompts=[str(p) for p in data.get("prompts", [])],
+            prompts=[PromptContract.from_dict(p) for p in data.get("prompts", [])],
             server_name=str(server.get("name") or ""),
             server_version=str(server.get("version") or ""),
             command=str(data.get("command") or ""),
