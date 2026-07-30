@@ -49,7 +49,16 @@ def render_contract(contract: Contract, console: Console | None = None) -> None:
         )
         table.add_row(tool.name, args or "[dim]none[/dim]")
     console.print(table)
-    console.print(f"{len(contract.tools)} tool(s) [dim]— required arguments in bold[/dim]")
+
+    summary = f"{len(contract.tools)} tool(s)"
+    with_output = sum(1 for t in contract.tools if t.output)
+    if with_output:
+        summary += f", {with_output} with a typed result"
+    if contract.resources:
+        summary += f", {len(contract.resources)} resource(s)"
+    if contract.prompts:
+        summary += f", {len(contract.prompts)} prompt(s)"
+    console.print(f"{summary} [dim]— required arguments in bold[/dim]")
 
 
 def render(report: DiffReport, console: Console | None = None) -> None:

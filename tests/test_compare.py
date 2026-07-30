@@ -15,12 +15,30 @@ from mcp_contract.model import (
 )
 
 
-def tool(name: str, *args: Argument, description: str = "does a thing") -> ToolContract:
-    return ToolContract(name=name, description=description, arguments=tuple(args))
+def tool(
+    name: str,
+    *args: Argument,
+    description: str = "does a thing",
+    output: tuple[Argument, ...] = (),
+) -> ToolContract:
+    return ToolContract(
+        name=name, description=description, arguments=tuple(args), output=output
+    )
 
 
-def contract(*tools: ToolContract, version: str = "1.0.0") -> Contract:
-    return Contract(tools=list(tools), server_name="srv", server_version=version)
+def contract(
+    *tools: ToolContract,
+    version: str = "1.0.0",
+    resources: list[str] | None = None,
+    prompts: list[str] | None = None,
+) -> Contract:
+    return Contract(
+        tools=list(tools),
+        resources=resources or [],
+        prompts=prompts or [],
+        server_name="srv",
+        server_version=version,
+    )
 
 
 def kinds(old: Contract, new: Contract) -> dict[str, str]:
@@ -152,6 +170,68 @@ def test_breaking_sorts_before_everything_else() -> None:
     assert severities[0] == BREAKING
     rank = {BREAKING: 0, ROUTING: 1, ADDITIVE: 2}
     assert severities == sorted(severities, key=lambda s: rank[s])
+
+
+# --------------------------------------------------------------------------- #
+# output fields — the mirror of input arguments
+# --------------------------------------------------------------------------- #
+def test_removed_output_field_is_breaking() -> None:
+    old = contract(tool("t", output=(Argument("id"), Argument("name"))))
+    new = contract(tool("t", output=(Argument("id"),)))
+    assert kinds(old, new)["output-field-removed"] == BREAKING
+
+
+def test_new_output_field_is_additive() -> None:
+    old = contract(tool("t", output=(Argument("id"),)))
+    new = contract(tool("t", output=(Argument("id"), Argument("extra"))))
+    assert kinds(old, new)["output-field-added"] == ADDITIVE
+
+
+def test_widened_output_type_is_breaking_the_mirror() -> None:
+    # input: widening is safe. output: widening can break a caller (may now get null).
+    old = contract(tool("t", output=(Argument("v", "string"),)))
+    new = contract(tool("t", output=(Argument("v", "string|null"),)))
+    assert kinds(old, new)["output-type-widened"] == BREAKING
+
+
+def test_narrowed_output_type_is_additive_the_mirror() -> None:
+    old = contract(tool("t", output=(Argument("v", "string|null"),)))
+    new = contract(tool("t", output=(Argument("v", "string"),)))
+    assert kinds(old, new)["output-type-narrowed"] == ADDITIVE
+
+
+def test_output_field_losing_its_guarantee_is_breaking() -> None:
+    old = contract(tool("t", output=(Argument("id", "string", required=True),)))
+    new = contract(tool("t", output=(Argument("id", "string", required=False),)))
+    assert kinds(old, new)["output-now-optional"] == BREAKING
+
+
+def test_new_output_enum_value_is_breaking() -> None:
+    # a caller switching on the result may not handle a newly-possible value
+    old = contract(tool("t", output=(Argument("status", "string", enum=("ok",)),)))
+    new = contract(tool("t", output=(Argument("status", "string", enum=("ok", "degraded")),)))
+    assert kinds(old, new)["output-enum-value-added"] == BREAKING
+
+
+# --------------------------------------------------------------------------- #
+# resources and prompts — presence
+# --------------------------------------------------------------------------- #
+def test_removed_resource_is_breaking() -> None:
+    old = contract(tool("t"), resources=["file:///a", "file:///b"])
+    new = contract(tool("t"), resources=["file:///a"])
+    assert kinds(old, new)["resource-removed"] == BREAKING
+
+
+def test_new_resource_is_additive() -> None:
+    old = contract(tool("t"), resources=["file:///a"])
+    new = contract(tool("t"), resources=["file:///a", "file:///b"])
+    assert kinds(old, new)["resource-added"] == ADDITIVE
+
+
+def test_removed_prompt_is_breaking() -> None:
+    old = contract(tool("t"), prompts=["summarize", "translate"])
+    new = contract(tool("t"), prompts=["summarize"])
+    assert kinds(old, new)["prompt-removed"] == BREAKING
 
 
 def test_report_counts_and_json_shape() -> None:

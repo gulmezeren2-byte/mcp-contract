@@ -1,6 +1,6 @@
 [project]
 name = "mcp-contract"
-version = "0.1.0"
+version = "0.2.0"
 description = "Contract testing for MCP servers: snapshot your tool surface, then fail CI when a change would break the agents that depend on it."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 — 2026-07-30
+
+Extends the contract from the input surface to the whole surface a caller depends on.
+
+- **Output fields are now part of the contract.** A tool's result schema is captured
+  and diffed — and judged from the *receiving* side, which is the mirror of an input
+  argument: removing an output field, or making it optional, breaks a caller that
+  reads it, and **widening** an output type is breaking (the caller may now get a value
+  it never handled) while narrowing is safe. Servers that return an untyped object
+  (`additionalProperties: true`) simply have nothing to diff — correct, not a miss.
+- **Resources and prompts** are captured too. A server that silently drops a resource
+  or a prompt breaks its callers exactly as a removed tool does, so their disappearance
+  is now a breaking change.
+- Closes the "output schemas aren't diffed yet" gap noted in 0.1.0.
+
+
 ## 0.1.0 — 2026-07-29
 
 First public release.

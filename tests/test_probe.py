@@ -36,6 +36,29 @@ def test_arguments_are_sorted_for_a_stable_file() -> None:
 def test_schema_without_properties_is_fine() -> None:
     tool = surface_from_schema("ping", "", {"type": "object"})
     assert tool.arguments == ()
+    assert tool.output == ()
+
+
+def test_output_schema_is_captured() -> None:
+    out_schema = {
+        "type": "object",
+        "properties": {"id": {"type": "string"}, "count": {"type": "integer"}},
+        "required": ["id"],
+    }
+    tool = surface_from_schema("parse", "Parse.", SCHEMA, out_schema)
+    assert tool.arguments  # input still captured
+    fields = tool.output_by_name
+    assert set(fields) == {"id", "count"}
+    assert fields["id"].required is True
+    assert fields["count"].type == "integer"
+
+
+def test_opaque_output_schema_yields_no_fields() -> None:
+    # FastMCP tools returning a plain dict advertise {"additionalProperties": true}
+    # with no properties — nothing to diff, and that's correct, not a miss.
+    opaque = {"type": "object", "additionalProperties": True}
+    tool = surface_from_schema("t", "", SCHEMA, opaque)
+    assert tool.output == ()
 
 
 def test_non_dict_property_does_not_explode() -> None:

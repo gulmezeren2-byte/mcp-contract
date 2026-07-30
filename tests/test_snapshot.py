@@ -13,8 +13,14 @@ from mcp_contract.snapshot import SnapshotError, dumps, read, write
 CONTRACT = Contract(
     tools=[
         ToolContract("b_tool", "second", (Argument("z", "string"), Argument("a", "integer"))),
-        ToolContract("a_tool", "first", (Argument("x", "string", required=True),)),
+        ToolContract(
+            "a_tool", "first",
+            (Argument("x", "string", required=True),),
+            output=(Argument("id", "string", required=True), Argument("note", "string")),
+        ),
     ],
+    resources=["file:///b", "file:///a"],
+    prompts=["translate", "summarize"],
     server_name="srv",
     server_version="1.2.3",
     command="srv --stdio",
@@ -26,11 +32,18 @@ def test_round_trip_preserves_the_contract() -> None:
     assert restored.server_name == "srv"
     assert restored.by_name["a_tool"].by_name["x"].required is True
     assert restored.by_name["b_tool"].by_name["a"].type == "integer"
+    # output fields, resources and prompts survive too
+    assert restored.by_name["a_tool"].output_by_name["id"].required is True
+    assert sorted(restored.resources) == ["file:///a", "file:///b"]
+    assert sorted(restored.prompts) == ["summarize", "translate"]
 
 
 def test_serialisation_is_stable_regardless_of_input_order() -> None:
+    # tools, resources and prompts all fed in a different order — output is identical
     shuffled = Contract(
         tools=[CONTRACT.tools[1], CONTRACT.tools[0]],
+        resources=list(reversed(CONTRACT.resources)),
+        prompts=list(reversed(CONTRACT.prompts)),
         server_name="srv",
         server_version="1.2.3",
         command="srv --stdio",

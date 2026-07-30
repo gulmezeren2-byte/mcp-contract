@@ -65,23 +65,34 @@ class Argument:
 
 @dataclass(frozen=True)
 class ToolContract:
-    """One tool as a caller sees it."""
+    """One tool as a caller sees it: the arguments it takes *in*, and the fields it
+    promises *back*. Output fields are modelled with the same shape as arguments, but
+    they are compared with mirrored severity — see compare.py — because the caller
+    receives them rather than sends them."""
 
     name: str
     description: str = ""
     arguments: tuple[Argument, ...] = ()
+    output: tuple[Argument, ...] = ()
 
     @property
     def by_name(self) -> dict[str, Argument]:
         return {a.name: a for a in self.arguments}
 
+    @property
+    def output_by_name(self) -> dict[str, Argument]:
+        return {a.name: a for a in self.output}
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "name": self.name,
             "description": self.description,
             # sorted so a re-snapshot of an unchanged server produces no git diff
             "arguments": [a.to_dict() for a in sorted(self.arguments, key=lambda a: a.name)],
         }
+        if self.output:
+            out["output"] = [a.to_dict() for a in sorted(self.output, key=lambda a: a.name)]
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ToolContract:
@@ -89,14 +100,19 @@ class ToolContract:
             name=str(data["name"]),
             description=str(data.get("description") or ""),
             arguments=tuple(Argument.from_dict(a) for a in data.get("arguments", [])),
+            output=tuple(Argument.from_dict(a) for a in data.get("output", [])),
         )
 
 
 @dataclass
 class Contract:
-    """A whole server surface, plus how it was obtained."""
+    """A whole server surface, plus how it was obtained. Tools are the bulk of it,
+    but a server also promises resources and prompts — dropping one breaks a caller
+    just as surely — so their names are carried too."""
 
     tools: list[ToolContract] = field(default_factory=list)
+    resources: list[str] = field(default_factory=list)
+    prompts: list[str] = field(default_factory=list)
     server_name: str = ""
     server_version: str = ""
     command: str = ""
@@ -106,17 +122,24 @@ class Contract:
         return {t.name: t for t in self.tools}
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "server": {"name": self.server_name, "version": self.server_version},
             "command": self.command,
             "tools": [t.to_dict() for t in sorted(self.tools, key=lambda t: t.name)],
         }
+        if self.resources:
+            out["resources"] = sorted(self.resources)
+        if self.prompts:
+            out["prompts"] = sorted(self.prompts)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Contract:
         server = data.get("server") or {}
         return cls(
             tools=[ToolContract.from_dict(t) for t in data.get("tools", [])],
+            resources=[str(r) for r in data.get("resources", [])],
+            prompts=[str(p) for p in data.get("prompts", [])],
             server_name=str(server.get("name") or ""),
             server_version=str(server.get("version") or ""),
             command=str(data.get("command") or ""),

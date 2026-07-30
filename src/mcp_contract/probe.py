@@ -47,28 +47,41 @@ def _argument_type(schema: dict[str, Any]) -> str | None:
     return None
 
 
-def surface_from_schema(name: str, description: str, schema: dict[str, Any]) -> ToolContract:
-    """Reduce one tool's advertised JSON Schema to its contract."""
+def _fields(schema: dict[str, Any]) -> tuple[Argument, ...]:
+    """Reduce a JSON Schema object to its named fields. Used for both the input
+    arguments and the output shape — the structure is identical; only how a change
+    to it is judged differs (see compare.py)."""
     properties = schema.get("properties") or {}
     required = set(schema.get("required") or [])
-    arguments = []
-    for arg_name, arg_schema in properties.items():
-        if not isinstance(arg_schema, dict):
-            arg_schema = {}
-        enum = arg_schema.get("enum")
-        arguments.append(
+    fields = []
+    for field_name, field_schema in properties.items():
+        if not isinstance(field_schema, dict):
+            field_schema = {}
+        enum = field_schema.get("enum")
+        fields.append(
             Argument(
-                name=str(arg_name),
-                type=_argument_type(arg_schema),
-                required=arg_name in required,
-                description=str(arg_schema.get("description") or ""),
+                name=str(field_name),
+                type=_argument_type(field_schema),
+                required=field_name in required,
+                description=str(field_schema.get("description") or ""),
                 enum=tuple(str(e) for e in enum) if isinstance(enum, list) else None,
             )
         )
+    return tuple(sorted(fields, key=lambda a: a.name))
+
+
+def surface_from_schema(
+    name: str,
+    description: str,
+    schema: dict[str, Any],
+    output_schema: dict[str, Any] | None = None,
+) -> ToolContract:
+    """Reduce one tool's advertised input and output JSON Schemas to its contract."""
     return ToolContract(
         name=name,
         description=description or "",
-        arguments=tuple(sorted(arguments, key=lambda a: a.name)),
+        arguments=_fields(schema),
+        output=_fields(output_schema or {}),
     )
 
 
@@ -87,11 +100,30 @@ def _first_attr(obj: object, *names: str) -> Any:
     return None
 
 
+async def _list_names(coro: Any, attr: str, key: str) -> list[str]:
+    """Best-effort names from list_resources / list_prompts. A server that doesn't
+    support the capability raises; that's an empty surface, not an error."""
+    try:
+        result = await coro()
+    except Exception:  # noqa: BLE001 - unsupported capability is not a failure
+        return []
+    items = getattr(result, attr, None) or []
+    out = []
+    for item in items:
+        value = getattr(item, key, None)
+        if value is not None:
+            out.append(str(value))
+    return out
+
+
 async def _probe(command: str, args: list[str], env: dict[str, str] | None) -> Contract:
     params = StdioServerParameters(command=command, args=args, env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         init = await session.initialize()
         listed = await session.list_tools()
+        # resources are keyed by URI, prompts by name — both break a caller if dropped
+        resources = await _list_names(session.list_resources, "resources", "uri")
+        prompts = await _list_names(session.list_prompts, "prompts", "name")
 
     info = _first_attr(init, "serverInfo", "server_info")
     tools = [
@@ -99,11 +131,14 @@ async def _probe(command: str, args: list[str], env: dict[str, str] | None) -> C
             t.name,
             t.description or "",
             dict(_first_attr(t, "inputSchema", "input_schema") or {}),
+            dict(_first_attr(t, "outputSchema", "output_schema") or {}),
         )
         for t in listed.tools
     ]
     return Contract(
         tools=tools,
+        resources=resources,
+        prompts=prompts,
         server_name=getattr(info, "name", "") or "",
         server_version=getattr(info, "version", "") or "",
         command=shlex.join([command, *args]),

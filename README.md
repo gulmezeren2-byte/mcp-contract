@@ -53,10 +53,12 @@ Every diff is noise unless you say who it hurts. Changes are classified by what 
 
 | | |
 |---|---|
-| **breaking** | An existing valid call stops working: a tool disappears, an argument is removed, an optional argument becomes required, a type narrows, an accepted enum value is dropped. **Exits non-zero.** |
-| **additive** | New surface nobody was using yet: a new tool, a new optional argument, a widened type, a new enum value. Reported, never fatal. |
+| **breaking** | An existing valid call stops working, or a promised result changes out from under a caller: a tool, argument, resource or prompt disappears; an argument is removed; an optional argument becomes required; an input type narrows; an output field is removed, becomes optional, or *widens* (the caller may now receive a value it didn't handle). **Exits non-zero.** |
+| **additive** | New surface nobody was using yet: a new tool, a new optional argument, a widened *input* type, a new *output* field. Reported, never fatal. |
 | **routing** | The schema is untouched but a **description** changed. See below. |
 | **cosmetic** | The server's version string. Noise. |
+
+Note the mirror: for an **input** argument, widening the accepted type is safe and narrowing it breaks callers; for an **output** field, it's the reverse — widening what you might return can break a caller that only handled the narrower shape. mcp-contract judges each from the caller's side.
 
 ### Why "routing" is its own class
 
@@ -64,7 +66,8 @@ An agent doesn't read your JSON Schema to decide *whether* to call a tool — it
 
 ## Honest about the edges
 
-- It compares the **input** surface and the descriptions. Output schemas aren't diffed yet.
+- It compares tools (input arguments **and** output fields), plus the presence of resources and prompts. Prompt *arguments* aren't diffed field-by-field yet — only whether the prompt still exists.
+- Output schemas are only as detailed as the server advertises. A server that returns an untyped object (`additionalProperties: true`, common with dict-returning FastMCP tools) has no output fields to diff — that's correct, not a miss.
 - It reads what the server *advertises*. Whether a tool still behaves correctly is a different question, and this doesn't answer it.
 - Type comparison is structural: `string` → `string|null` is widening (safe), the reverse is narrowing (breaking). Each argument is compared at the top level of its schema.
 - Re-snapshotting is how you accept a change deliberately. Nothing is rewritten behind your back.

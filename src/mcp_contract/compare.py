@@ -82,6 +82,58 @@ def _compare_argument(tool: str, old: Argument, new: Argument) -> list[Change]:
     return out
 
 
+def _compare_output_field(tool: str, old: Argument, new: Argument) -> list[Change]:
+    """Output fields are the mirror of input arguments: the caller *receives* them,
+    so the severities flip. Widening an output can break a caller (it may now get a
+    shape it didn't handle); narrowing it is safe. A field that stops being guaranteed
+    is breaking; a new guarantee is safe. A new possible enum value can break a caller
+    that switches on it; a removed one cannot."""
+    out: list[Change] = []
+
+    if old.type != new.type:
+        if _is_widening(old.type, new.type):
+            out.append(
+                Change("output-type-widened", BREAKING, tool,
+                       f"output {old.type} -> {new.type}; a caller may now receive a value "
+                       "it doesn't handle", old.name)
+            )
+        else:
+            out.append(
+                Change("output-type-narrowed", ADDITIVE, tool,
+                       f"output {old.type} -> {new.type}; still within what callers handled",
+                       old.name)
+            )
+
+    if old.required and not new.required:
+        out.append(
+            Change("output-now-optional", BREAKING, tool,
+                   "an output field that was always present may now be missing", old.name)
+        )
+    elif not old.required and new.required:
+        out.append(
+            Change("output-now-guaranteed", ADDITIVE, tool,
+                   "an output field is now always present", old.name)
+        )
+
+    old_enum, new_enum = set(old.enum or ()), set(new.enum or ())
+    if old_enum or new_enum:
+        added = new_enum - old_enum
+        removed = old_enum - new_enum
+        if added:
+            out.append(
+                Change("output-enum-value-added", BREAKING, tool,
+                       f"output may now be {', '.join(sorted(added))}; a caller matching on "
+                       "it may not handle that", old.name)
+            )
+        if removed:
+            out.append(
+                Change("output-enum-value-removed", ADDITIVE, tool,
+                       f"output no longer returns {', '.join(sorted(removed))}", old.name)
+            )
+
+    return out
+
+
 def _compare_tool(old: ToolContract, new: ToolContract) -> list[Change]:
     out: list[Change] = []
 
@@ -117,6 +169,20 @@ def _compare_tool(old: ToolContract, new: ToolContract) -> list[Change]:
     for name in sorted(set(old_args) & set(new_args)):
         out.extend(_compare_argument(old.name, old_args[name], new_args[name]))
 
+    # the output shape: a caller parses this, so a lost field is a real break
+    old_out, new_out = old.output_by_name, new.output_by_name
+    for name in sorted(set(old_out) - set(new_out)):
+        out.append(
+            Change("output-field-removed", BREAKING, old.name,
+                   "a field the caller reads is gone from the result", name)
+        )
+    for name in sorted(set(new_out) - set(old_out)):
+        out.append(
+            Change("output-field-added", ADDITIVE, old.name, "new field in the result", name)
+        )
+    for name in sorted(set(old_out) & set(new_out)):
+        out.extend(_compare_output_field(old.name, old_out[name], new_out[name]))
+
     return out
 
 
@@ -136,6 +202,19 @@ def compare(old: Contract, new: Contract) -> DiffReport:
 
     for name in sorted(set(old_tools) & set(new_tools)):
         changes.extend(_compare_tool(old_tools[name], new_tools[name]))
+
+    # resources and prompts: dropping one breaks a caller as surely as dropping a tool
+    for kind, old_names, new_names in (
+        ("resource", set(old.resources), set(new.resources)),
+        ("prompt", set(old.prompts), set(new.prompts)),
+    ):
+        for name in sorted(old_names - new_names):
+            changes.append(
+                Change(f"{kind}-removed", BREAKING, name,
+                       f"a {kind} the server exposed is gone")
+            )
+        for name in sorted(new_names - old_names):
+            changes.append(Change(f"{kind}-added", ADDITIVE, name, f"new {kind}"))
 
     if old.server_version and new.server_version and old.server_version != new.server_version:
         changes.append(
