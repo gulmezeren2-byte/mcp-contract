@@ -18,10 +18,15 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import METHOD_NOT_FOUND, PaginatedRequestParams
 
 from mcp_contract.model import Argument, Contract, PromptContract, ToolContract
 
 DEFAULT_TIMEOUT = 60.0
+
+# A listing is paginated; a server still handing out cursors after this many pages is
+# broken rather than large, and following it forever would hang the probe.
+MAX_PAGES = 100
 
 # How deep a recorded field name may go (`a.b.c.d` is four levels). Deep enough for
 # real schemas, shallow enough that the contract file stays readable and bounded —
@@ -289,31 +294,64 @@ def _first_attr(obj: object, *names: str) -> Any:
     return None
 
 
-async def _list_names(coro: Any, attr: str, key: str) -> list[str]:
-    """Best-effort names from list_resources / list_prompts. A server that doesn't
-    support the capability raises; that's an empty surface, not an error."""
-    try:
-        result = await coro()
-    except Exception:  # noqa: BLE001 - unsupported capability is not a failure
-        return []
-    items = getattr(result, attr, None) or []
+def _error_code(exc: BaseException) -> int | None:
+    """The JSON-RPC code behind an SDK error, across both majors: 2.x renamed
+    `McpError` to `MCPError` and puts the code on the exception, 1.x wraps it in an
+    `ErrorData`. Reading both is the same tax the field renames charge elsewhere."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code
+    code = getattr(getattr(exc, "error", None), "code", None)
+    return code if isinstance(code, int) else None
+
+
+async def _all_pages(call: Any, attr: str, notes: list[str], what: str) -> list[Any]:
+    """Every page of a listing, not just the first.
+
+    `tools/list` and its siblings are paginated and the SDK does not follow the cursor
+    for you. Reading a single page records a partial surface — and a tool that merely
+    sat on page two would read as *removed* the next time anyone checked.
+
+    A server that doesn't offer the capability at all answers method-not-found, and an
+    empty surface is the correct reading of that. Any *other* error is reported as a
+    note rather than swallowed: "the call failed" and "there are none" are different
+    facts, and only one of them is safe to write into a contract.
+    """
+    items: list[Any] = []
+    cursor: str | None = None
+    for _ in range(MAX_PAGES):
+        try:
+            params = PaginatedRequestParams(cursor=cursor) if cursor else None
+            result = await call(params=params)
+        except Exception as exc:  # noqa: BLE001 - the reason is what we classify on
+            if _error_code(exc) != METHOD_NOT_FOUND:
+                notes.append(
+                    f"{what}: could not be listed ({type(exc).__name__}: {exc}); "
+                    "recorded as empty"
+                )
+            return items
+        items.extend(getattr(result, attr, None) or [])
+        cursor = _first_attr(result, "nextCursor", "next_cursor")
+        if not cursor:
+            return items
+    notes.append(f"{what}: stopped after {MAX_PAGES} pages; the server kept paginating")
+    return items
+
+
+async def _list_resources(session: ClientSession, notes: list[str]) -> list[str]:
     out = []
-    for item in items:
-        value = getattr(item, key, None)
-        if value is not None:
-            out.append(str(value))
+    for item in await _all_pages(session.list_resources, "resources", notes, "resources"):
+        uri = getattr(item, "uri", None)
+        if uri is not None:
+            out.append(str(uri))
     return out
 
 
-async def _list_prompts(session: ClientSession) -> list[PromptContract]:
+async def _list_prompts(session: ClientSession, notes: list[str]) -> list[PromptContract]:
     """Prompts with their arguments. Like tools, a prompt losing an argument (or
     gaining a required one) breaks a caller, so the arguments are part of the contract."""
-    try:
-        result = await session.list_prompts()
-    except Exception:  # noqa: BLE001 - unsupported capability is not a failure
-        return []
     out = []
-    for prompt in getattr(result, "prompts", None) or []:
+    for prompt in await _all_pages(session.list_prompts, "prompts", notes, "prompts"):
         args = tuple(
             Argument(
                 name=str(a.name),
@@ -328,17 +366,17 @@ async def _list_prompts(session: ClientSession) -> list[PromptContract]:
 
 async def _probe(command: str, args: list[str], env: dict[str, str] | None) -> Contract:
     params = StdioServerParameters(command=command, args=args, env=env)
+    notes: list[str] = []
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         init = await session.initialize()
-        listed = await session.list_tools()
+        listed = await _all_pages(session.list_tools, "tools", notes, "tools")
         # resources break a caller if dropped; prompts also break if an argument goes
-        resources = await _list_names(session.list_resources, "resources", "uri")
-        prompts = await _list_prompts(session)
+        resources = await _list_resources(session, notes)
+        prompts = await _list_prompts(session, notes)
 
     info = _first_attr(init, "serverInfo", "server_info")
-    notes: list[str] = []
     tools = []
-    for t in listed.tools:
+    for t in listed:
         # a note names the field, so prefix it with the tool it belongs to
         before = len(notes)
         tools.append(

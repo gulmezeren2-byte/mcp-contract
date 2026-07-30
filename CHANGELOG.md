@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.0 — 2026-07-30
+
+Two more ways the contract could have been quietly incomplete, closed. Same theme as
+0.4.0: the danger in a tool like this isn't being wrong, it's being silently partial.
+
+- **Every page of a listing is read.** `tools/list`, `prompts/list` and
+  `resources/list` are paginated, and the SDK does not follow the cursor for you — a
+  single call reads one page. Against a server that paginates, the recorded contract
+  would have been a fraction of the surface, and a tool that merely sat on page two
+  would have come back as `tool-removed` — breaking, against a server that never
+  changed. The cursor is now followed to the end, bounded at 100 pages so a server
+  that keeps handing out cursors stops the probe instead of hanging it.
+- **"The listing failed" is no longer recorded as "there are none."** Every error
+  from the optional listings was swallowed, so a prompts call that died on a bad
+  connection produced the same contract as a server with no prompts — and the next
+  `check` against a real server would then have reported every prompt as added, or
+  worse, a genuine removal would have been invisible. Method-not-found still means an
+  empty surface, correctly and quietly; any other failure is now surfaced.
+- Reads the SDK's error shape across both majors — 2.x renamed `McpError` to
+  `MCPError` and moved the JSON-RPC code onto the exception. Same tax the field
+  renames charge, same fix.
+
+
 ## 0.4.0 — 2026-07-30
 
 Fixes a silent miss: part of the surface this tool claimed to hold servers to was

@@ -95,6 +95,8 @@ Contract files carry a `format` number. One recorded before nested fields were t
 - It reads what the server *advertises*. Whether a tool still behaves correctly is a different question, and this doesn't answer it.
 - Type comparison is structural: `string` → `string|null` is widening (safe), the reverse is narrowing (breaking).
 - Per-call metadata is deliberately excluded. The `ttlMs` and `cacheScope` fields the 2026-07-28 spec requires on list responses are cache hints that can differ between two probes of an unchanged server; recording them would make every `check` a diff about nothing.
+- Listings are paginated and the SDK doesn't follow the cursor for you, so every page is read. A partial read would be worse than useless here: a tool that merely sat on page two would come back as *removed*.
+- A server that doesn't offer prompts or resources answers method-not-found, and recording nothing is the right reading of that. Any **other** failure of a listing is printed rather than read as "there are none" — those are different facts, and only one of them is safe to write into a contract.
 - Re-snapshotting is how you accept a change deliberately. Nothing is rewritten behind your back.
 - It speaks both MCP Python SDK spellings (`inputSchema` and `input_schema`), because the SDK renamed them and servers in the wild use both — which is, more or less, the argument for this project.
 

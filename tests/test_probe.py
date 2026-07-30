@@ -3,9 +3,16 @@ into a contract, and tolerating the SDK's field renames."""
 
 from __future__ import annotations
 
+import asyncio
+
+from mcp.types import METHOD_NOT_FOUND
+
 from mcp_contract.probe import (
     MAX_NESTING,
+    MAX_PAGES,
+    _all_pages,
     _argument_type,
+    _error_code,
     _first_attr,
     surface_from_schema,
 )
@@ -232,6 +239,89 @@ def test_deep_nesting_stops_at_the_documented_limit() -> None:
     names = [a.name for a in surface_from_schema("t", "", schema, notes=notes).arguments]
     assert max(n.count(".") for n in names) <= MAX_NESTING
     assert notes  # the cut is reported, not hidden
+
+
+# --------------------------------------------------------------------------- #
+# listings are paginated, and the SDK does not follow the cursor for you
+#
+# Reading one page records a partial surface, and a tool that merely sat on page two
+# would read as *removed* the next time anyone checked — a breaking change reported
+# against a server that never changed.
+# --------------------------------------------------------------------------- #
+class _Page:
+    def __init__(self, items: list[str], cursor: str | None) -> None:
+        self.tools = items
+        self.nextCursor = cursor  # noqa: N815 - the SDK's own spelling
+
+
+def _paged(*pages: _Page):  # type: ignore[no-untyped-def]
+    seen = []
+
+    async def call(*, params=None):  # type: ignore[no-untyped-def]
+        seen.append(getattr(params, "cursor", None))
+        return pages[len(seen) - 1]
+
+    call.cursors = seen  # type: ignore[attr-defined]
+    return call
+
+
+def test_every_page_is_read(anyio_backend: object = None) -> None:
+    call = _paged(_Page(["a", "b"], "p2"), _Page(["c"], None))
+    got = asyncio.run(_all_pages(call, "tools", [], "tools"))
+    assert got == ["a", "b", "c"]
+    # the first call sends no cursor, the second sends the one it was handed
+    assert call.cursors == [None, "p2"]  # type: ignore[attr-defined]
+
+
+def test_a_server_without_the_capability_is_an_empty_surface_not_an_error() -> None:
+    # method-not-found means the server does not offer this at all — recording nothing
+    # is the correct reading, and it is not worth telling anyone about
+    class Missing(Exception):
+        code = METHOD_NOT_FOUND
+
+    async def call(*, params=None):  # type: ignore[no-untyped-def]
+        raise Missing()
+
+    notes: list[str] = []
+    assert asyncio.run(_all_pages(call, "prompts", notes, "prompts")) == []
+    assert notes == []
+
+
+def test_any_other_failure_is_reported_rather_than_read_as_empty() -> None:
+    # "the call failed" and "there are none" are different facts, and writing the
+    # second when the first is true is how a contract quietly becomes fiction
+    async def call(*, params=None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("connection reset")
+
+    notes: list[str] = []
+    assert asyncio.run(_all_pages(call, "resources", notes, "resources")) == []
+    assert notes and "connection reset" in notes[0]
+
+
+def test_an_endlessly_paginating_server_stops_and_says_so() -> None:
+    async def call(*, params=None):  # type: ignore[no-untyped-def]
+        return _Page(["x"], "always-more")
+
+    notes: list[str] = []
+    got = asyncio.run(_all_pages(call, "tools", notes, "tools"))
+    assert len(got) == MAX_PAGES
+    assert notes and "kept paginating" in notes[0]
+
+
+def test_error_code_is_read_from_both_sdk_shapes() -> None:
+    # 2.x puts the code on the exception; 1.x wraps it in an ErrorData
+    class New(Exception):
+        code = METHOD_NOT_FOUND
+
+    class Data:
+        code = METHOD_NOT_FOUND
+
+    class Old(Exception):
+        error = Data()
+
+    assert _error_code(New()) == METHOD_NOT_FOUND
+    assert _error_code(Old()) == METHOD_NOT_FOUND
+    assert _error_code(RuntimeError("plain")) is None
 
 
 def test_first_attr_speaks_both_sdk_spellings() -> None:
