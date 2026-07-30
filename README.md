@@ -70,6 +70,12 @@ An agent doesn't read your JSON Schema to decide *whether* to call a tool — it
 - Re-snapshotting is how you accept a change deliberately. Nothing is rewritten behind your back.
 - It speaks both MCP Python SDK spellings (`inputSchema` and `input_schema`), because the SDK renamed them and servers in the wild use both — which is, more or less, the argument for this project.
 
+## Related
+
+- **[claude-skills-doctor](https://github.com/gulmezeren2-byte/claude-skills-doctor)** — the same idea one layer up. `mcp-contract` watches the tools an agent *calls*; `claude-skills-doctor` watches the skills it can *reach* — the silent 15,000-char discovery budget, and descriptions that collide so Claude picks the wrong one. Both treat the text an agent routes on as a contract worth testing.
+
+More tools by [Eren Gülmez](https://github.com/gulmezeren2-byte?tab=repositories).
+
 ## License
 
 MIT
