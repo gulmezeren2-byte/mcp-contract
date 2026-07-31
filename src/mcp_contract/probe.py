@@ -13,12 +13,18 @@ real breaks.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import shlex
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import METHOD_NOT_FOUND, PaginatedRequestParams
+from mcp.types import METHOD_NOT_FOUND
+
+try:  # the `params=` form of pagination arrived in SDK 1.20; before that, `cursor=`
+    from mcp.types import PaginatedRequestParams
+except ImportError:  # pragma: no cover - depends on the installed SDK
+    PaginatedRequestParams = None  # type: ignore[assignment, misc]
 
 from mcp_contract.model import Argument, Contract, PromptContract, ToolContract
 
@@ -305,6 +311,25 @@ def _error_code(exc: BaseException) -> int | None:
     return code if isinstance(code, int) else None
 
 
+def _cursor_kwargs(call: Any, cursor: str | None) -> dict[str, Any]:
+    """How this SDK wants a cursor passed.
+
+    1.20 introduced the `params=PaginatedRequestParams(...)` form; before that it was
+    a positional `cursor`. Both are still in the wild, so both are spoken — the same
+    tax `_first_attr` pays for the field renames. The first request carries no cursor
+    at all, which every version accepts.
+    """
+    if cursor is None:
+        return {}
+    try:
+        takes_params = "params" in inspect.signature(call).parameters
+    except (TypeError, ValueError):  # pragma: no cover - a callable without a signature
+        takes_params = True
+    if takes_params and PaginatedRequestParams is not None:
+        return {"params": PaginatedRequestParams(cursor=cursor)}
+    return {"cursor": cursor}
+
+
 async def _all_pages(call: Any, attr: str, notes: list[str], what: str) -> list[Any]:
     """Every page of a listing, not just the first.
 
@@ -321,8 +346,7 @@ async def _all_pages(call: Any, attr: str, notes: list[str], what: str) -> list[
     cursor: str | None = None
     for _ in range(MAX_PAGES):
         try:
-            params = PaginatedRequestParams(cursor=cursor) if cursor else None
-            result = await call(params=params)
+            result = await call(**_cursor_kwargs(call, cursor))
         except Exception as exc:  # noqa: BLE001 - the reason is what we classify on
             if _error_code(exc) != METHOD_NOT_FOUND:
                 notes.append(

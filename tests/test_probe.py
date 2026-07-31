@@ -12,6 +12,7 @@ from mcp_contract.probe import (
     MAX_PAGES,
     _all_pages,
     _argument_type,
+    _cursor_kwargs,
     _error_code,
     _first_attr,
     surface_from_schema,
@@ -306,6 +307,23 @@ def test_an_endlessly_paginating_server_stops_and_says_so() -> None:
     got = asyncio.run(_all_pages(call, "tools", notes, "tools"))
     assert len(got) == MAX_PAGES
     assert notes and "kept paginating" in notes[0]
+
+
+def test_the_cursor_is_passed_the_way_the_installed_sdk_wants_it() -> None:
+    # SDK 1.20 introduced `params=PaginatedRequestParams(...)`; before that it was a
+    # positional `cursor`, and both are installed in the wild. Getting this wrong is
+    # not a graceful degradation — it's a TypeError on the second page.
+    async def new_style(*, params=None):  # type: ignore[no-untyped-def]
+        return None
+
+    async def old_style(cursor=None):  # type: ignore[no-untyped-def]
+        return None
+
+    # the first request carries no cursor at all, which every version accepts
+    assert _cursor_kwargs(new_style, None) == {}
+    assert _cursor_kwargs(old_style, None) == {}
+    assert "params" in _cursor_kwargs(new_style, "page-2")
+    assert _cursor_kwargs(old_style, "page-2") == {"cursor": "page-2"}
 
 
 def test_error_code_is_read_from_both_sdk_shapes() -> None:

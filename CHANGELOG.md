@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.1 — 2026-07-31
+
+- **Fixed: the declared SDK range was a claim, not a fact.** `pyproject.toml` said
+  `mcp>=1.2`, but 0.5.0's pagination passed the cursor as
+  `params=PaginatedRequestParams(...)` — a form the SDK only grew in **1.20**. On
+  anything older the second page raised `TypeError`, and on 1.2 the module did not
+  import at all. Every check of 0.4.0 and 0.5.0 had run against SDK 2.0.0, so the
+  older client path had never once been executed.
+  The cursor is now passed the way the installed SDK wants it — `params=` where that
+  exists, positional `cursor=` before it — and the floor is `mcp>=1.9`, which is a
+  range that has actually been run: verified end-to-end on **1.9.4, 1.16.0, 1.20.0,
+  1.28.1 and 2.0.0**, each probing a live server with a nested model.
+
+  This is the same defect the tool exists to catch, in the tool itself: a promise
+  wider than what was tested.
+
+
 ## 0.5.0 — 2026-07-30
 
 Two more ways the contract could have been quietly incomplete, closed. Same theme as
