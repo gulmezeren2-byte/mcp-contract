@@ -78,6 +78,33 @@ Every diff is noise unless you say who it hurts. Changes are classified by what 
 
 Note the mirror: for an **input** argument, widening the accepted type is safe and narrowing it breaks callers; for an **output** field, it's the reverse — widening what you might return can break a caller that only handled the narrower shape. mcp-contract judges each from the caller's side.
 
+## What a tool promises about itself
+
+A server can advertise *how* a tool behaves, separately from what it takes:
+
+```json
+{ "name": "export_rows",
+  "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true } }
+```
+
+Callers act on these before ever reading a schema — an agent host auto-approves a read-only tool, retries an idempotent one, asks for confirmation on a destructive one. So flipping a hint changes what is safe to do with the tool **while every argument stays byte-identical**:
+
+```
+$ mcp-contract check -- ./server
+
+breaking (2)
+  behaviour-read_only-reversed  export_rows → read_only
+      the tool no longer promises to be read-only; a caller that auto-approved
+      it on that basis is now approving a write
+  behaviour-destructive-reversed  export_rows → destructive
+      the tool now declares itself destructive; a caller that ran it unattended
+      was not expecting that
+```
+
+That is the tool-poisoning shape — a server that looks safe at approval time and changes afterwards. Reversing a hint or withdrawing one is **breaking**; declaring one for the first time, or moving toward the safer value, is **additive**, because new information about a tool is not a change in what it was already doing. `execution.taskSupport` is compared the same way.
+
+Adoption of these hints is still thin — plenty of servers set none, and for those there is simply nothing here to diff, which is correct rather than a miss.
+
 ### Why "routing" is its own class
 
 An agent doesn't read your JSON Schema to decide *whether* to call a tool — it reads the description. Reword it and no call breaks, no schema differs, every contract test in the ordinary sense passes... and the agent may quietly stop choosing that tool, or start choosing it for the wrong task. That's a real behavioural change a schema diff cannot see, so it gets named rather than buried. It doesn't fail the build by default; `--strict` is how you say it should.

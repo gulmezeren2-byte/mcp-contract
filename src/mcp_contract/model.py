@@ -73,6 +73,60 @@ class Argument:
 
 
 @dataclass(frozen=True)
+class Behaviour:
+    """What a server advertises about *how* a tool behaves, rather than what it takes.
+
+    These are the `annotations` hints plus task support. They are promises a caller
+    acts on before ever reading a schema: an agent host may auto-approve a tool
+    because it says it is read-only, retry one because it says it is idempotent, or
+    require confirmation for one that says it is destructive. Withdrawing or
+    reversing such a hint changes what is safe to do with the tool while every
+    argument stays identical — invisible to a schema diff, and the reason this is
+    modelled separately.
+
+    `None` means the server said nothing, which is different from saying `false`.
+    """
+
+    read_only: bool | None = None
+    destructive: bool | None = None
+    idempotent: bool | None = None
+    open_world: bool | None = None
+    task_support: str | None = None  # forbidden | optional | required
+
+    def to_dict(self) -> dict[str, Any]:
+        out = {
+            "read_only": self.read_only,
+            "destructive": self.destructive,
+            "idempotent": self.idempotent,
+            "open_world": self.open_world,
+            "task_support": self.task_support,
+        }
+        # omit what the server never said, so an unannotated tool adds no noise
+        return {k: v for k, v in out.items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> Behaviour:
+        data = data or {}
+        return cls(
+            read_only=data.get("read_only"),
+            destructive=data.get("destructive"),
+            idempotent=data.get("idempotent"),
+            open_world=data.get("open_world"),
+            task_support=data.get("task_support"),
+        )
+
+    @property
+    def declared(self) -> bool:
+        return any(
+            v is not None
+            for v in (
+                self.read_only, self.destructive, self.idempotent,
+                self.open_world, self.task_support,
+            )
+        )
+
+
+@dataclass(frozen=True)
 class ToolContract:
     """One tool as a caller sees it: the arguments it takes *in*, and the fields it
     promises *back*. Output fields are modelled with the same shape as arguments, but
@@ -83,6 +137,8 @@ class ToolContract:
     description: str = ""
     arguments: tuple[Argument, ...] = ()
     output: tuple[Argument, ...] = ()
+    title: str = ""
+    behaviour: Behaviour = field(default_factory=Behaviour)
 
     @property
     def by_name(self) -> dict[str, Argument]:
@@ -99,6 +155,10 @@ class ToolContract:
             # sorted so a re-snapshot of an unchanged server produces no git diff
             "arguments": [a.to_dict() for a in sorted(self.arguments, key=lambda a: a.name)],
         }
+        if self.title:
+            out["title"] = self.title
+        if self.behaviour.declared:
+            out["behaviour"] = self.behaviour.to_dict()
         if self.output:
             out["output"] = [a.to_dict() for a in sorted(self.output, key=lambda a: a.name)]
         return out
@@ -110,6 +170,8 @@ class ToolContract:
             description=str(data.get("description") or ""),
             arguments=tuple(Argument.from_dict(a) for a in data.get("arguments", [])),
             output=tuple(Argument.from_dict(a) for a in data.get("output", [])),
+            title=str(data.get("title") or ""),
+            behaviour=Behaviour.from_dict(data.get("behaviour")),
         )
 
 

@@ -26,7 +26,7 @@ try:  # the `params=` form of pagination arrived in SDK 1.20; before that, `curs
 except ImportError:  # pragma: no cover - depends on the installed SDK
     PaginatedRequestParams = None  # type: ignore[assignment, misc]
 
-from mcp_contract.model import Argument, Contract, PromptContract, ToolContract
+from mcp_contract.model import Argument, Behaviour, Contract, PromptContract, ToolContract
 
 DEFAULT_TIMEOUT = 60.0
 
@@ -264,12 +264,41 @@ def _fields(schema: dict[str, Any], notes: list[str] | None = None) -> tuple[Arg
     return tuple(sorted(fields, key=lambda a: a.name))
 
 
+def _behaviour(tool: Any) -> Behaviour:
+    """The `annotations` hints and task support a server advertises for a tool.
+
+    These are promises a caller acts on before reading a schema — auto-approving a
+    read-only tool, retrying an idempotent one, confirming a destructive one — so a
+    hint that reverses or disappears changes what is safe to do while every argument
+    stays identical. Both SDK spellings are read, as everywhere else here.
+    """
+    annotations = _first_attr(tool, "annotations")
+    execution = _first_attr(tool, "execution")
+
+    def hint(*names: str) -> bool | None:
+        if annotations is None:
+            return None
+        value = _first_attr(annotations, *names)
+        return bool(value) if isinstance(value, bool) else None
+
+    support = _first_attr(execution, "taskSupport", "task_support") if execution else None
+    return Behaviour(
+        read_only=hint("readOnlyHint", "read_only_hint"),
+        destructive=hint("destructiveHint", "destructive_hint"),
+        idempotent=hint("idempotentHint", "idempotent_hint"),
+        open_world=hint("openWorldHint", "open_world_hint"),
+        task_support=str(support) if support is not None else None,
+    )
+
+
 def surface_from_schema(
     name: str,
     description: str,
     schema: dict[str, Any],
     output_schema: dict[str, Any] | None = None,
     notes: list[str] | None = None,
+    title: str = "",
+    behaviour: Behaviour | None = None,
 ) -> ToolContract:
     """Reduce one tool's advertised input and output JSON Schemas to its contract.
 
@@ -282,6 +311,8 @@ def surface_from_schema(
         description=description or "",
         arguments=_fields(schema, notes),
         output=_fields(output_schema or {}, notes),
+        title=title or "",
+        behaviour=behaviour or Behaviour(),
     )
 
 
@@ -410,6 +441,8 @@ async def _probe(command: str, args: list[str], env: dict[str, str] | None) -> C
                 dict(_first_attr(t, "inputSchema", "input_schema") or {}),
                 dict(_first_attr(t, "outputSchema", "output_schema") or {}),
                 notes,
+                str(_first_attr(t, "title") or ""),
+                _behaviour(t),
             )
         )
         notes[before:] = [f"{t.name}: {n}" for n in notes[before:]]

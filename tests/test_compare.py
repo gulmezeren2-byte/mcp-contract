@@ -10,6 +10,8 @@ from mcp_contract.model import (
     COSMETIC,
     ROUTING,
     Argument,
+    Behaviour,
+    Change,
     Contract,
     PromptContract,
     ToolContract,
@@ -346,3 +348,75 @@ def test_report_counts_and_json_shape() -> None:
     assert data["counts"]["breaking"] == 1
     assert data["counts"]["routing"] == 1
     assert data["changes"][0]["severity"] == BREAKING
+
+
+# --------------------------------------------------------------------------- #
+# behaviour hints — promises about *how* a tool acts
+#
+# A caller acts on these before ever reading a schema: an agent host auto-approves a
+# read-only tool, retries an idempotent one, confirms a destructive one. Reversing or
+# withdrawing a hint changes what is safe to do while every argument stays identical,
+# so a schema diff cannot see it. That is the whole reason this class exists.
+# --------------------------------------------------------------------------- #
+def behaved(**hints: object) -> ToolContract:
+    return ToolContract(name="t", description="does a thing", behaviour=Behaviour(**hints))
+
+
+def one(old: ToolContract, new: ToolContract) -> Change:
+    changes = compare(contract(old), contract(new)).changes
+    assert len(changes) == 1, changes
+    return changes[0]
+
+
+def test_a_read_only_tool_that_stops_being_read_only_is_breaking() -> None:
+    c = one(behaved(read_only=True), behaved(read_only=False))
+    assert (c.kind, c.severity) == ("behaviour-read_only-reversed", BREAKING)
+    assert "auto-approved" in c.detail
+
+
+def test_a_tool_that_becomes_destructive_is_breaking() -> None:
+    c = one(behaved(destructive=False), behaved(destructive=True))
+    assert (c.kind, c.severity) == ("behaviour-destructive-reversed", BREAKING)
+
+
+def test_losing_idempotence_is_breaking_because_retries_stop_being_safe() -> None:
+    c = one(behaved(idempotent=True), behaved(idempotent=False))
+    assert (c.kind, c.severity) == ("behaviour-idempotent-reversed", BREAKING)
+    assert "double-apply" in c.detail
+
+
+def test_withdrawing_a_hint_entirely_is_breaking() -> None:
+    # a guarantee that disappears leaves a caller with nothing to rely on
+    c = one(behaved(read_only=True), behaved())
+    assert (c.kind, c.severity) == ("behaviour-read_only-withdrawn", BREAKING)
+
+
+def test_declaring_a_hint_for_the_first_time_is_additive() -> None:
+    # newly published information, not a change in what the tool was already doing
+    c = one(behaved(), behaved(destructive=True))
+    assert (c.kind, c.severity) == ("behaviour-destructive-declared", ADDITIVE)
+
+
+def test_moving_toward_the_safer_value_is_additive() -> None:
+    c = one(behaved(destructive=True), behaved(destructive=False))
+    assert (c.kind, c.severity) == ("behaviour-destructive-relaxed", ADDITIVE)
+
+
+def test_unchanged_behaviour_is_no_change() -> None:
+    same = Behaviour(read_only=True, idempotent=True, task_support="optional")
+    old = ToolContract(name="t", description="d", behaviour=same)
+    new = ToolContract(name="t", description="d", behaviour=same)
+    assert compare(contract(old), contract(new)).changes == []
+
+
+def test_dropping_task_support_is_breaking() -> None:
+    c = one(behaved(task_support="required"), behaved())
+    assert (c.kind, c.severity) == ("task-support-changed", BREAKING)
+
+
+def test_a_title_change_is_routing_not_breaking() -> None:
+    old = ToolContract(name="t", description="d", title="Parse catalog")
+    new = ToolContract(name="t", description="d", title="Extract rows")
+    report = compare(contract(old), contract(new))
+    assert [(c.kind, c.severity) for c in report.changes] == [("tool-title-changed", ROUTING)]
+    assert report.ok  # no call breaks

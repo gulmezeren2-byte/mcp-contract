@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0 — 2026-08-01
+
+Extends the contract from what a tool *takes* to what it promises about *itself*.
+
+- **Tool behaviour hints are now part of the contract.** A server can advertise
+  `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`, and callers
+  act on them before ever reading a schema — an agent host auto-approves a read-only
+  tool, retries an idempotent one, confirms a destructive one. Flipping a hint changes
+  what is safe to do with the tool **while every argument stays byte-identical**, so a
+  schema diff cannot see it. Reversing a hint or withdrawing one is **breaking**;
+  declaring one for the first time, or moving toward the safer value, is **additive**,
+  because new information about a tool is not a change in what it was already doing.
+  `execution.taskSupport` is compared the same way, and `title` — the display name a
+  human or an agent picks a tool by — is **routing**.
+- This is the tool-poisoning shape: a server that reads as safe at approval time and
+  changes afterwards. The protocol will not solve it — the proposal to make a content
+  digest mandatory on every tool
+  ([SEP-1766](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1766))
+  was closed, as was tool semantic versioning (SEP-1575) — so a committed, diffable
+  record of what a server *said* is the practical defence.
+- Verified end-to-end against a live server whose input schema is unchanged and whose
+  only difference is `readOnlyHint: true → false`: two breaking changes, named.
+- No noise for the servers that set none of this: an unannotated tool writes no
+  `behaviour` key at all, snapshots stay byte-stable, and a contract recorded by
+  ≤ 0.5.1 compares clean against a server that has since declared hints — those come
+  back as *additive*, not as breaks. Adoption is genuinely thin today; this records
+  what is there and stays quiet about what isn't.
+
+
 ## 0.5.1 — 2026-07-31
 
 - **Fixed: the declared SDK range was a claim, not a fact.** `pyproject.toml` said

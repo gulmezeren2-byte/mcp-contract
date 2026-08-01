@@ -173,8 +173,101 @@ def _compare_prompt(old: PromptContract, new: PromptContract) -> list[Change]:
     return out
 
 
+# For each behaviour hint: the value that grants the caller *more* freedom. Moving
+# away from it withdraws a promise the caller may already be acting on — an agent
+# host that auto-approved a read-only tool, or retried an idempotent one.
+_SAFE_VALUE = {
+    "read_only": True,
+    "destructive": False,
+    "idempotent": True,
+    "open_world": False,
+}
+_HINT_DETAIL = {
+    "read_only": (
+        "the tool no longer promises to be read-only; a caller that auto-approved it "
+        "on that basis is now approving a write"
+    ),
+    "destructive": (
+        "the tool now declares itself destructive; a caller that ran it unattended "
+        "was not expecting that"
+    ),
+    "idempotent": (
+        "the tool no longer promises to be idempotent; a caller that retries on "
+        "timeout may now double-apply it"
+    ),
+    "open_world": (
+        "the tool now declares it touches an open world of external entities"
+    ),
+}
+
+
+def _compare_behaviour(tool: str, old: ToolContract, new: ToolContract) -> list[Change]:
+    """Diff the advertised behaviour hints.
+
+    These are promises about *how* a tool acts, and a caller acts on them before ever
+    reading a schema. Reversing one, or withdrawing it entirely, changes what is safe
+    to do with the tool while every argument stays byte-identical — which is exactly
+    the kind of change a schema diff cannot see.
+    """
+    out: list[Change] = []
+    a, b = old.behaviour, new.behaviour
+
+    for hint, safe in _SAFE_VALUE.items():
+        was, now = getattr(a, hint), getattr(b, hint)
+        if was == now:
+            continue
+        if was is None:
+            # newly declared: information the caller did not have before, not a change
+            # in what the tool was already allowed to do
+            out.append(
+                Change(f"behaviour-{hint}-declared", ADDITIVE, tool,
+                       f"now declares {hint}={str(now).lower()}", hint)
+            )
+        elif now is None:
+            out.append(
+                Change(f"behaviour-{hint}-withdrawn", BREAKING, tool,
+                       f"no longer declares {hint}; a caller relying on that guarantee "
+                       "has nothing to rely on", hint)
+            )
+        elif was == safe:
+            out.append(
+                Change(f"behaviour-{hint}-reversed", BREAKING, tool,
+                       _HINT_DETAIL[hint], hint)
+            )
+        else:
+            out.append(
+                Change(f"behaviour-{hint}-relaxed", ADDITIVE, tool,
+                       f"{hint} is now {str(now).lower()}, which constrains the tool "
+                       "further rather than less", hint)
+            )
+
+    if a.task_support != b.task_support:
+        # `required` and `forbidden` are opposite ends: a caller written for one
+        # cannot call a server that has moved to the other
+        severity = BREAKING if (a.task_support and b.task_support) else (
+            BREAKING if a.task_support else ADDITIVE
+        )
+        out.append(
+            Change("task-support-changed", severity, tool,
+                   f"task support {a.task_support or '(undeclared)'} -> "
+                   f"{b.task_support or '(undeclared)'}", "task_support")
+        )
+
+    return out
+
+
 def _compare_tool(old: ToolContract, new: ToolContract) -> list[Change]:
     out: list[Change] = []
+
+    if old.title != new.title:
+        out.append(
+            Change(
+                "tool-title-changed", ROUTING, old.name,
+                "the display name a human or an agent picks this tool by changed",
+            )
+        )
+
+    out.extend(_compare_behaviour(old.name, old, new))
 
     if old.description != new.description:
         out.append(
