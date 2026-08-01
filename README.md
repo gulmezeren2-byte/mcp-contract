@@ -101,9 +101,13 @@ breaking (2)
       was not expecting that
 ```
 
-That is the tool-poisoning shape — a server that looks safe at approval time and changes afterwards. Reversing a hint or withdrawing one is **breaking**; declaring one for the first time, or moving toward the safer value, is **additive**, because new information about a tool is not a change in what it was already doing. `execution.taskSupport` is compared the same way.
+That is the tool-poisoning shape — a server that looks safe at approval time and changes afterwards. Moving a hint *away* from the value that grants callers more freedom is **breaking**; moving toward it is **additive**.
 
-Adoption of these hints is still thin — plenty of servers set none, and for those there is simply nothing here to diff, which is correct rather than a miss.
+Crucially, every hint has a **documented default** — `readOnlyHint` false, `destructiveHint` true, `idempotentHint` false, `openWorldHint` true — so an omitted hint is a promise, not a silence. Omissions are resolved to those defaults before anything is judged. A server that merely starts writing `destructiveHint: true` has published nothing new, and gets a **cosmetic** note rather than an alarm; and because `destructiveHint` and `idempotentHint` are meaningful "only when `readOnlyHint == false`", they are skipped entirely for a tool that is read-only on both sides.
+
+`execution.taskSupport` follows the same logic: `optional` accepts callers of both styles, so arriving there never breaks anyone and leaving it drops whichever style was just refused.
+
+How much is out there varies. The public `@modelcontextprotocol/server-memory` sets `title` on every tool and `taskSupport: forbidden`, but no annotation hints at all — for those there is simply nothing to diff, which is correct rather than a miss.
 
 ### Why "routing" is its own class
 

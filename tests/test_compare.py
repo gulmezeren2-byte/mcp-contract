@@ -385,16 +385,41 @@ def test_losing_idempotence_is_breaking_because_retries_stop_being_safe() -> Non
     assert "double-apply" in c.detail
 
 
-def test_withdrawing_a_hint_entirely_is_breaking() -> None:
-    # a guarantee that disappears leaves a caller with nothing to rely on
+def test_dropping_a_hint_is_judged_against_the_documented_default() -> None:
+    # readOnlyHint defaults to false, so dropping `read_only: true` really does mean
+    # the tool stopped promising to be read-only
     c = one(behaved(read_only=True), behaved())
-    assert (c.kind, c.severity) == ("behaviour-read_only-withdrawn", BREAKING)
+    assert (c.kind, c.severity) == ("behaviour-read_only-reversed", BREAKING)
 
 
-def test_declaring_a_hint_for_the_first_time_is_additive() -> None:
-    # newly published information, not a change in what the tool was already doing
+def test_stating_a_hint_that_matches_its_default_is_not_a_change() -> None:
+    # destructiveHint defaults to *true*, so a server that starts writing
+    # `destructive: true` has published nothing new — the file changed, the promise
+    # did not. Calling that breaking would be a false alarm on an unchanged server.
     c = one(behaved(), behaved(destructive=True))
-    assert (c.kind, c.severity) == ("behaviour-destructive-declared", ADDITIVE)
+    assert (c.kind, c.severity) == ("behaviour-destructive-restated", COSMETIC)
+    assert compare(contract(behaved()), contract(behaved(destructive=True))).ok
+
+
+def test_dropping_a_hint_that_matched_its_default_is_not_a_change() -> None:
+    # the same in reverse: open_world defaults to true, so dropping `true` is a no-op
+    c = one(behaved(open_world=True), behaved())
+    assert c.severity == COSMETIC
+
+
+def test_declaring_a_hint_against_its_default_is_the_real_signal() -> None:
+    # destructive defaults to true, so declaring `false` genuinely narrows the tool
+    c = one(behaved(), behaved(destructive=False))
+    assert (c.kind, c.severity) == ("behaviour-destructive-relaxed", ADDITIVE)
+
+
+def test_a_read_only_tool_ignores_hints_the_spec_calls_meaningless() -> None:
+    # the spec: destructiveHint and idempotentHint are "meaningful only when
+    # readOnlyHint == false", so for a tool that cannot write on either side they
+    # say nothing worth reporting
+    old = behaved(read_only=True, destructive=False)
+    new = behaved(read_only=True, destructive=True)
+    assert compare(contract(old), contract(new)).changes == []
 
 
 def test_moving_toward_the_safer_value_is_additive() -> None:
@@ -412,6 +437,20 @@ def test_unchanged_behaviour_is_no_change() -> None:
 def test_dropping_task_support_is_breaking() -> None:
     c = one(behaved(task_support="required"), behaved())
     assert (c.kind, c.severity) == ("task-support-changed", BREAKING)
+
+
+def test_moving_to_optional_task_support_never_breaks_anyone() -> None:
+    # `optional` accepts callers of both styles, so arriving there is always safe...
+    for was in ("required", "forbidden"):
+        c = one(behaved(task_support=was), behaved(task_support="optional"))
+        assert (c.kind, c.severity) == ("task-support-changed", ADDITIVE), was
+
+
+def test_moving_away_from_optional_task_support_breaks_one_side() -> None:
+    # ...while leaving it drops whichever calling style it just stopped accepting
+    for now in ("required", "forbidden"):
+        c = one(behaved(task_support="optional"), behaved(task_support=now))
+        assert (c.kind, c.severity) == ("task-support-changed", BREAKING), now
 
 
 def test_a_title_change_is_routing_not_breaking() -> None:

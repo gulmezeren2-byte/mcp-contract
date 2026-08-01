@@ -22,11 +22,22 @@ Extends the contract from what a tool *takes* to what it promises about *itself*
   record of what a server *said* is the practical defence.
 - Verified end-to-end against a live server whose input schema is unchanged and whose
   only difference is `readOnlyHint: true → false`: two breaking changes, named.
-- No noise for the servers that set none of this: an unannotated tool writes no
-  `behaviour` key at all, snapshots stay byte-stable, and a contract recorded by
-  ≤ 0.5.1 compares clean against a server that has since declared hints — those come
-  back as *additive*, not as breaks. Adoption is genuinely thin today; this records
-  what is there and stays quiet about what isn't.
+- **Omitted hints are resolved to their documented defaults before anything is
+  judged** — `readOnlyHint` false, `destructiveHint` true, `idempotentHint` false,
+  `openWorldHint` true, per `schema.ts`. An absent hint is a promise, not a silence,
+  so a server that merely starts *writing out* `destructiveHint: true` has published
+  nothing new and gets a cosmetic note instead of an alarm. Comparing the literal
+  values would have raised a false breaking change every time a server became more
+  explicit. And since the spec says `destructiveHint` and `idempotentHint` are
+  meaningful "only when `readOnlyHint == false`", they are skipped for a tool that is
+  read-only on both sides.
+- `taskSupport` is judged by the same asymmetry: `optional` accepts callers of both
+  styles, so moving *to* it is additive and moving away from it is breaking.
+- No noise for servers that set none of this: an unannotated tool writes no
+  `behaviour` key at all, and snapshots stay byte-stable across probes. The public
+  `@modelcontextprotocol/server-memory` turns out to set `title` on every tool and
+  `taskSupport: forbidden`, but no annotation hints — so the committed demo image was
+  regenerated to match.
 
 
 ## 0.5.1 — 2026-07-31

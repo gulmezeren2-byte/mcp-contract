@@ -16,6 +16,7 @@ from mcp_contract.model import (
     FORMAT,
     ROUTING,
     Argument,
+    Behaviour,
     Change,
     Contract,
     DiffReport,
@@ -173,9 +174,20 @@ def _compare_prompt(old: PromptContract, new: PromptContract) -> list[Change]:
     return out
 
 
-# For each behaviour hint: the value that grants the caller *more* freedom. Moving
-# away from it withdraws a promise the caller may already be acting on — an agent
-# host that auto-approved a read-only tool, or retried an idempotent one.
+# What the spec says a hint means when the server omits it. These are documented
+# defaults, not "unknown" — schema.ts states them outright — so an omitted hint is a
+# concrete promise, and a hint that appears while matching its default changes the
+# recorded file without changing the promise.
+#   readOnlyHint: false · destructiveHint: true · idempotentHint: false · openWorldHint: true
+_DEFAULT = {
+    "read_only": False,
+    "destructive": True,
+    "idempotent": False,
+    "open_world": True,
+}
+# For each hint: the value that grants the caller *more* freedom. Moving away from it
+# withdraws something the caller may already be acting on — an agent host that
+# auto-approved a read-only tool, or retried an idempotent one.
 _SAFE_VALUE = {
     "read_only": True,
     "destructive": False,
@@ -201,38 +213,51 @@ _HINT_DETAIL = {
 }
 
 
+def _effective(behaviour: Behaviour, hint: str) -> bool:
+    """What the hint actually means, omission included.
+
+    The spec gives every hint a documented default, so an absent hint is a concrete
+    promise rather than a silence. Comparing the raw values would report a change
+    every time a server merely started stating what was already true — and, worse,
+    would miss nothing while crying wolf, which is the failure mode this project
+    exists to avoid.
+    """
+    value = getattr(behaviour, hint)
+    return _DEFAULT[hint] if value is None else bool(value)
+
+
 def _compare_behaviour(tool: str, old: ToolContract, new: ToolContract) -> list[Change]:
     """Diff the advertised behaviour hints.
 
     These are promises about *how* a tool acts, and a caller acts on them before ever
-    reading a schema. Reversing one, or withdrawing it entirely, changes what is safe
-    to do with the tool while every argument stays byte-identical — which is exactly
-    the kind of change a schema diff cannot see.
+    reading a schema. Reversing one changes what is safe to do with the tool while
+    every argument stays byte-identical — exactly the kind of change a schema diff
+    cannot see.
     """
     out: list[Change] = []
     a, b = old.behaviour, new.behaviour
+    # `destructiveHint` and `idempotentHint` are, per the spec, "meaningful only when
+    # readOnlyHint == false" — so for a tool that is read-only on both sides they say
+    # nothing, and reporting them would be noise about a tool that cannot write at all
+    read_only_throughout = _effective(a, "read_only") and _effective(b, "read_only")
 
     for hint, safe in _SAFE_VALUE.items():
-        was, now = getattr(a, hint), getattr(b, hint)
-        if was == now:
+        if read_only_throughout and hint in ("destructive", "idempotent"):
             continue
-        if was is None:
-            # newly declared: information the caller did not have before, not a change
-            # in what the tool was already allowed to do
+        was, now = _effective(a, hint), _effective(b, hint)
+        if was == now:
+            if getattr(a, hint) != getattr(b, hint):
+                # the file changed, the promise did not: the server started (or
+                # stopped) stating a value equal to the default
+                out.append(
+                    Change(f"behaviour-{hint}-restated", COSMETIC, tool,
+                           f"{hint} is now written out as {str(now).lower()}, which is "
+                           "what the default already meant", hint)
+                )
+            continue
+        if was == safe:
             out.append(
-                Change(f"behaviour-{hint}-declared", ADDITIVE, tool,
-                       f"now declares {hint}={str(now).lower()}", hint)
-            )
-        elif now is None:
-            out.append(
-                Change(f"behaviour-{hint}-withdrawn", BREAKING, tool,
-                       f"no longer declares {hint}; a caller relying on that guarantee "
-                       "has nothing to rely on", hint)
-            )
-        elif was == safe:
-            out.append(
-                Change(f"behaviour-{hint}-reversed", BREAKING, tool,
-                       _HINT_DETAIL[hint], hint)
+                Change(f"behaviour-{hint}-reversed", BREAKING, tool, _HINT_DETAIL[hint], hint)
             )
         else:
             out.append(
@@ -242,11 +267,10 @@ def _compare_behaviour(tool: str, old: ToolContract, new: ToolContract) -> list[
             )
 
     if a.task_support != b.task_support:
-        # `required` and `forbidden` are opposite ends: a caller written for one
-        # cannot call a server that has moved to the other
-        severity = BREAKING if (a.task_support and b.task_support) else (
-            BREAKING if a.task_support else ADDITIVE
-        )
+        # `optional` accepts callers of both styles; `required` and `forbidden` are
+        # mutually exclusive ends. So moving *to* optional never breaks anyone, and
+        # moving away from it breaks whoever used the style it just dropped.
+        severity = ADDITIVE if b.task_support == "optional" else BREAKING
         out.append(
             Change("task-support-changed", severity, tool,
                    f"task support {a.task_support or '(undeclared)'} -> "

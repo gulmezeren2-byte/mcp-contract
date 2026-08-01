@@ -79,12 +79,16 @@ class Behaviour:
     These are the `annotations` hints plus task support. They are promises a caller
     acts on before ever reading a schema: an agent host may auto-approve a tool
     because it says it is read-only, retry one because it says it is idempotent, or
-    require confirmation for one that says it is destructive. Withdrawing or
-    reversing such a hint changes what is safe to do with the tool while every
-    argument stays identical — invisible to a schema diff, and the reason this is
-    modelled separately.
+    require confirmation for one that says it is destructive. Reversing such a hint
+    changes what is safe to do with the tool while every argument stays identical —
+    invisible to a schema diff, and the reason this is modelled separately.
 
-    `None` means the server said nothing, which is different from saying `false`.
+    `None` means the server omitted the hint, which is **not** the same as unknown:
+    the spec gives each one a documented default (`readOnlyHint` false,
+    `destructiveHint` true, `idempotentHint` false, `openWorldHint` true), so an
+    omission is itself a promise. `compare` resolves omissions to those defaults
+    before judging anything, or a server that merely started stating what was already
+    true would look like it had changed.
     """
 
     read_only: bool | None = None
